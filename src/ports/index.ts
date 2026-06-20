@@ -1,0 +1,27 @@
+/**
+ * Barrel for the dev3-loop ports & DTOs (PLAN §5).
+ *
+ * Ports import **only** domain types and these DTOs — never an adapter. The
+ * domain core depends on these interfaces; adapters implement them.
+ *
+ * @module ports
+ */
+
+export type { BoardPort } from "./board.ts";
+export type { RuntimePort } from "./runtime.ts";
+export type { GitPort } from "./git.ts";
+export type { JournalPort } from "./journal.ts";
+export type { EventLogPort } from "./eventlog.ts";
+export type { ClockPort } from "./clock.ts";
+export type { ConfigPort } from "./config.ts";
+
+export type {
+  CheckResult,
+  MergeResult,
+  PrResult,
+  ProducerResult,
+  GraderCriterion,
+  GraderReview,
+  LoopEvent,
+  LoopEventType,
+} from "./dto.ts";
