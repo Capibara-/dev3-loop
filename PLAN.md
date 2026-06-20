@@ -415,7 +415,7 @@ dev3-loop/
 │   │   ├── git/       # GitCli (diff, checks, merge, gh pr)
 │   │   └── fs/        # FsJournal, NdjsonEventLog, SystemClock, FileConfig
 │   ├── app/           # composition root: wires ports→adapters, runs the loop
-│   └── cli.ts         # `dev3-loop run | dry-run | replay | doctor`
+│   └── cli.ts         # `dev3-loop run | dry-run | replay | preflight`
 ├── tests/
 │   ├── unit/          # decide(), guardrails, grader routing — Fake* ports
 │   ├── recovery/      # crash/idempotency/replay
@@ -462,7 +462,7 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 - **README.md** — what it is, quickstart, how to point it at a dev-3.0 install, the two open questions (§18) called out explicitly, and a "trust ladder" note (start in `dry-run`, then `open_pr`, then `merge_when_green`, then `fix_until_green_and_merge`).
 - **docs/ARCHITECTURE.md** — ports/adapters diagram, the reconcile loop, state ownership table (board=stage, git=done, journal=loop-meta), why level-triggered + write-ahead.
 - **docs/POLICY.md** — `CRABBOX.md`/policy file format, every knob, defaults, examples.
-- **docs/OPERATIONS.md** — running, `doctor`, `replay`, reading the event log, what each guardrail trip looks like on the board, recovery after a crash.
+- **docs/OPERATIONS.md** — running, `preflight`, `replay`, reading the event log, what each guardrail trip looks like on the board, recovery after a crash.
 - **AGENTS.md** — conventions for agents editing this repo (mirrors dev-3.0's own AGENTS.md ethos): pure-domain rule, no I/O in `domain/`, test-first, atomic writes.
 - TSDoc on every port method and every `Action` variant.
 
@@ -495,7 +495,7 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 ## 17. Open questions / discovery (do NOT guess — stub + document)
 
 1. **`dev3` CLI surface.** Need real subcommands for *list cards*, *move card to lane/column*, *add note*. Until provided, implement `Dev3CliBoard` against assumed commands (`dev3 task list --json`, `dev3 task move <id> <col>`, `dev3 note add <id> <text>`) with each marked `// DISCOVERY` and centralized in one module. Provide `FakeBoard` for all tests so nothing blocks. Action item for the human: paste `dev3 task --help` (and `dev3 --help`).
-2. **JSON store path + schema.** Need the on-disk location (likely under `~/.dev3.0/`) and the card record shape, to implement `Dev3JsonReader`. Make the path a config value (`dev3StorePath`) defaulting to a best guess; ship a `doctor` command that locates and validates the store and prints the detected schema. Commit a sample store as a test fixture once known.
+2. **JSON store path + schema.** Need the on-disk location (likely under `~/.dev3.0/`) and the card record shape, to implement `Dev3JsonReader`. Make the path a config value (`dev3StorePath`) defaulting to a best guess; ship a `preflight` command that locates and validates the store and prints the detected schema. Commit a sample store as a test fixture once known.
 3. **Completion signal.** Default to the `.dev3/result.json` / `.dev3/review.json` convention written by the agents (we control the prompts). Optionally add a tmux `alert-bell` hook (`tmux set-hook -t <session> alert-bell 'run-shell "..."'`) as a faster wake; the file remains authoritative.
 4. **Per-repo checks command.** Comes from the policy file (`checks:`). Confirm the canonical lint/test commands per target repo.
 
@@ -552,7 +552,7 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   strict `tsconfig.json`, `vitest.config.ts`, `.gitignore`, empty `src/{domain,
   ports,adapters,app}` + `tests/` tree, one smoke test. Gate: install + tsc + 1
   passing test.
-- **T2 CLI skeleton.** `src/cli.ts` parsing `run | dry-run | replay | doctor` +
+- **T2 CLI skeleton.** `src/cli.ts` parsing `run | dry-run | replay | preflight` +
   `--help`/`--version`; unknown cmd → non-zero. Test: arg parse + help. (dep: T1)
 - **T3 CI workflow.** `.github/workflows/ci.yml`: bun install → tsc --noEmit →
   vitest run. (dep: T1)

@@ -6,9 +6,27 @@
 ## Toolchain
 
 - **Runtime is Bun.** Gates: `bun run typecheck` (`tsc --noEmit`) and `bun run test` (`vitest run`).
-- **Bun install on this machine:** not preinstalled, and `bun.sh` is network-blocked here.
-  Installed via `npm install -g bun` → lives under fnm Node **v20.19.1**
-  (`which bun` is an fnm shim). It is global only for that Node version; switching
-  Node versions via fnm hides it — reinstall there if so.
-- **Bash tool is sandboxed with no network.** `bun install` must run with the
-  sandbox disabled; `typecheck`/`test` run fine sandboxed (no network needed).
+- **Dependencies auto-install per worktree.** `.dev3/config.json` sets
+  `setupScript: "bun install"` and `clonePaths: ["node_modules"]`, so every new
+  dev-3.0 worktree gets deps automatically (CoW-cloned, or installed) — you should
+  not need to install by hand. If you add a dependency and must install manually,
+  see the caveats below.
+- **Bun lives under a specific fnm Node version** (`v20.19.1`) on this machine —
+  `which bun` is an fnm shim, global only for that Node version. Switching Node
+  versions via fnm hides it; reinstall there (`npm install -g bun`) if so.
+- **The Bash tool is sandboxed with no network**, and `bun.sh` is network-blocked.
+  A manual `bun install` must run with the sandbox disabled; `typecheck`/`test`
+  run fine sandboxed (no network needed). The `setupScript` runs outside the
+  sandbox, so the normal worktree-setup path is unaffected.
+
+## Git workflow
+
+- **Every task: commit → push → open a PR when it's ready for review.** Don't leave
+  finished work sitting only in the local worktree.
+- Commit your work in focused commits on the task branch (already named per the
+  dev-3.0 convention, e.g. `feat/dev3-…`).
+- Push the branch: `git push -u origin <branch>`.
+- Open a PR against `master` for the user's review: `gh pr create --base master
+  --fill` (expand the body with what changed + how it was verified).
+- Do this once the task's Definition of Done is met (gates green); the PR is the
+  review surface — the user reviews and merges.

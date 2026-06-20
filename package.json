@@ -3,9 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "dev3-loop": "src/cli.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cli": "bun run src/cli.ts"
   },
   "devDependencies": {
     "vitest": "^3.2.4"
