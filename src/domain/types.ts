@@ -92,7 +92,7 @@ export interface Card {
   /** dev-3.0 branch, deterministic: `dev3/task-<id8>`. */
   branch: string;
   /** task.worktreePath (null until dev-3.0 starts it). */
-  worktreePath: string;
+  worktreePath: string | null;
   /** task.status — the built-in lane. */
   lane: Lane;
   /** task.customColumnId — when set, overrides {@link Card.lane} for routing. */
