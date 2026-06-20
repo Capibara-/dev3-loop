@@ -18,6 +18,25 @@ jobs:
         with:
           bun-version: "1.3.10"
 
+      # TEMP diagnostic: prove whether the runner can reach the npm registry /
+      # tarball CDN at all (github.com is the control). Never fails the job.
+      - name: Diagnostic — npm network reachability
+        continue-on-error: true
+        run: |
+          echo "===== DNS: registry.npmjs.org ====="
+          nslookup registry.npmjs.org || true
+          echo "===== HEAD https://registry.npmjs.org/ ====="
+          curl -sS -I --max-time 20 https://registry.npmjs.org/ || true
+          echo "===== HEAD https://npmjs.org ====="
+          curl -sS -I --max-time 20 https://npmjs.org || true
+          echo "===== GET real tarball (typescript) ====="
+          curl -sS -o /dev/null -w 'http_code=%{http_code} time=%{time_total}s size=%{size_download}\n' \
+            --max-time 30 https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz || true
+          echo "===== CONTROL: HEAD https://github.com ====="
+          curl -sS -I --max-time 20 https://github.com || true
+          echo "===== proxy / npm env ====="
+          env | grep -iE 'proxy|npm_|bun' || echo "(none)"
+
       # Cache node_modules so green runs never touch the registry again. Keyed on
       # the lockfile hash; only a lockfile change forces a fresh install.
       - name: Restore node_modules cache
