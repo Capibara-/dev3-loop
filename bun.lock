@@ -5,6 +5,7 @@
     "": {
       "name": "dev3-loop",
       "devDependencies": {
+        "typescript": "6.0.3",
         "vitest": "^3.2.4",
       },
     },
@@ -201,6 +202,8 @@
     "tinyrainbow": ["tinyrainbow@2.0.0", "https://npm.dev.wixpress.com/api/npm/npm-repos/tinyrainbow/-/tinyrainbow-2.0.0.tgz", {}, "sha512-op4nsTR47R6p0vMUUoYl/a+ljLFVtlfaXkLQmqfLR1qHma1h/ysYk4hEXZ880bf2CYgTskvTa/e196Vd5dDQXw=="],
 
     "tinyspy": ["tinyspy@4.0.4", "https://npm.dev.wixpress.com/api/npm/npm-repos/tinyspy/-/tinyspy-4.0.4.tgz", {}, "sha512-azl+t0z7pw/z958Gy9svOTuzqIk6xq+NSheJzn5MMWtWTFywIacg2wUlzKFGtt3cthx0r2SxMK0yzJOR0IES7Q=="],
+
+    "typescript": ["typescript@6.0.3", "https://npm.dev.wixpress.com/api/npm/npm-repos/typescript/-/typescript-6.0.3.tgz", { "bin": { "tsserver": "bin/tsserver", "tsc": "bin/tsc" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "vite": ["vite@7.3.5", "https://npm.dev.wixpress.com/api/npm/npm-repos/vite/-/vite-7.3.5.tgz", { "dependencies": { "esbuild": "^0.27.0", "fdir": "^6.5.0", "picomatch": "^4.0.3", "postcss": "^8.5.6", "rollup": "^4.43.0", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "jiti": ">=1.21.0", "less": "^4.0.0", "lightningcss": "^1.21.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-KuOaNhcnGFN2zIPGA7wRmzF+lJA1sea7rHq17aiJ++9lzY1WWG6Jpwqwe1KNbRVPIqHmr8GLYx7jbrQcN/7/ww=="],
 

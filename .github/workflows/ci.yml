@@ -12,12 +12,37 @@ jobs:
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
 
-      - name: Install dependencies
-        run: bun install
+      - name: Restore node_modules cache
+        id: cache-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: ./node_modules
+          key: npm-deps-linux-x64-${{ hashFiles('package-lock.json') }}
+
+      # Why npm ci and not `bun install`: this runner has no working IPv6 egress.
+      # npm's Cloudflare CDN publishes AAAA records, and bun's installer does its
+      # own DNS (ignoring /etc/hosts, the kernel IPv6-disable, and gai.conf),
+      # tries IPv6, and hard-fails (ConnectionRefused/FailedToOpenSocket) with no
+      # IPv4 fallback -- even though IPv4 works. Node/npm use Happy Eyeballs and
+      # fall back to IPv4 automatically, so they install cleanly. The bun runtime
+      # still runs typecheck/test below. bun.lock stays the source of truth for
+      # local dev (where IPv6 works); package-lock.json exists only for CI's npm.
+      - name: Install dependencies (npm ci — Node IPv4 fallback)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund
+
+      - name: Save node_modules cache
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ./node_modules
+          key: npm-deps-linux-x64-${{ hashFiles('package-lock.json') }}
 
       - name: Typecheck
         run: bun run typecheck
 
       - name: Test
-        run: bun run test
+        run: bun test
