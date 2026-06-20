@@ -52,20 +52,20 @@ jobs:
           path: ./node_modules
           key: bun-deps-linux-x64-${{ hashFiles('bun.lock') }}
 
-      - name: Install dependencies
+      # Root cause (proven by the diagnostic above): this runner has no working
+      # IPv6 egress; npm's Cloudflare CDN publishes AAAA records and bun tries
+      # IPv6 and hard-fails (ConnectionRefused/FailedToOpenSocket) while IPv4
+      # works. Make the system resolver prefer IPv4 mappings over IPv6 so bun
+      # connects over IPv4.
+      - name: Force IPv4 preference (gai.conf)
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
-          # Root cause (proven by the diagnostic above): this runner has no
-          # working IPv6 egress, npm's Cloudflare CDN publishes AAAA records, and
-          # bun's installer tries IPv6 and hard-fails (ConnectionRefused /
-          # FailedToOpenSocket) without falling back to IPv4 -- while curl(IPv4)
-          # downloads fine. bun ignores /etc/hosts (own DNS resolver), so disable
-          # IPv6 at the kernel level to force IPv4. Lower network concurrency to
-          # avoid the socket pressure behind FailedToOpenSocket.
-          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
-          sudo sysctl -w net.ipv6.conf.lo.disable_ipv6=1
-          bun install --frozen-lockfile --network-concurrency 4
+          sudo cp /etc/gai.conf /etc/gai.conf.bak || true
+          echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf
+
+      - name: Install dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: bun install --frozen-lockfile
 
       - name: Save node_modules cache
         if: steps.cache-deps.outputs.cache-hit != 'true'
