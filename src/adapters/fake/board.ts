@@ -29,8 +29,8 @@ const BUILTIN_LANES = new Set<string>([
 export interface MoveRecord {
   id: string;
   to: Lane | CustomColumnId;
-  /** The expected current lane (compare-and-set guard), or `undefined` for unguarded. */
-  expect: Lane | undefined;
+  /** The expected current lane/column (compare-and-set guard), or `undefined` for unguarded. */
+  expect: Lane | CustomColumnId | undefined;
   /** False when the `expect` guard did not match and the move was skipped. */
   applied: boolean;
 }
@@ -72,7 +72,7 @@ export class FakeBoard implements BoardPort {
     return Promise.resolve([...this.cards]);
   }
 
-  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane): Promise<void> {
+  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane | CustomColumnId): Promise<void> {
     const card = this.cards.find((c) => c.id === id);
     const applied = card !== undefined && (expect === undefined || card.lane === expect);
     this.moves.push({ id, to, expect, applied });

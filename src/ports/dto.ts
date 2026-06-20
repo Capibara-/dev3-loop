@@ -126,8 +126,9 @@ export type LoopEventType = "intent" | "done" | "lane_move" | "guardrail_trip" |
 
 /**
  * One record in the append-only event log (`${stateDir}/events.ndjson`). This is
- * the replayable spine of the system; the journal is a derived projection that
- * can be rebuilt from these (PLAN §9, §13 test 10).
+ * an audit/observability trace (powers `replay` + the operations story) — **not**
+ * a source of truth: the journal is authoritative and is **not** rebuilt from
+ * these (PLAN §9, §13 test 10, Finding #10).
  */
 export interface LoopEvent {
   /** Epoch ms when the event was emitted (from `ClockPort.now`). */

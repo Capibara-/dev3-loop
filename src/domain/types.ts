@@ -137,8 +137,10 @@ export interface AttemptRecord {
 }
 
 /**
- * Durable per-card bookkeeping (the journal). Persisted atomically; rebuildable
- * from the NDJSON event log. A crash + restart resumes from this alone.
+ * Durable per-card bookkeeping (the journal) — the **single source of truth for
+ * state** (PLAN §9, Finding #10). Persisted atomically; a crash + restart resumes
+ * from this alone (via its `pending` write-ahead + reality-checks). The NDJSON
+ * event log is an audit trace, **not** a thing the journal is rebuilt from.
  */
 export interface CardJournal {
   /** dev-3.0 task uuid this journal belongs to. */
@@ -174,13 +176,19 @@ export type Action =
   | { kind: "SendFixPrompt"; card: Card; findings: string }
   /**
    * Move the card to a built-in {@link Lane} or a {@link CustomColumnId}.
-   * `expect` is the lane we believe the card is in → the adapter issues a
+   * `expect` is the lane/column we believe the card is in → the adapter issues a
    * guarded `--if-status <expect>` compare-and-set (server-enforced, race-free).
    * `note` is an optional human-facing note to attach with the move.
    */
-  | { kind: "MoveLane"; card: Card; to: Lane | CustomColumnId; expect?: Lane; note?: string }
-  /** Merge the branch into base (fast-forward/no-ff + push); exactly-once, write-ahead logged. */
-  | { kind: "Merge"; card: Card }
+  | { kind: "MoveLane"; card: Card; to: Lane | CustomColumnId; expect?: Lane | CustomColumnId; note?: string }
+  /**
+   * Merge the branch into base (push + `gh pr merge`); exactly-once, write-ahead
+   * logged. `expect` is the lane/column we believe authorizes the merge (e.g.
+   * `ready_to_merge`); the adapter re-verifies it AND `isMerged` immediately
+   * before the irreversible push and no-ops if either changed — a CAS guard on
+   * the highest-stakes action (PLAN §6, Finding #7).
+   */
+  | { kind: "Merge"; card: Card; expect?: Lane | CustomColumnId }
   /** Open a pull request via the gh CLI (open_pr policy). */
   | { kind: "OpenPr"; card: Card }
   /** Abandon the card to the human (move to user-questions + diagnostic note) with a reason. */

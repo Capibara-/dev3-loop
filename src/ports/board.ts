@@ -38,9 +38,9 @@ export interface BoardPort {
    *
    * @param id     dev-3.0 task uuid.
    * @param to     destination built-in lane or custom-column id.
-   * @param expect lane the card is expected to be in for the move to apply.
+   * @param expect lane/column the card is expected to be in for the move to apply.
    */
-  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane): Promise<void>;
+  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane | CustomColumnId): Promise<void>;
 
   /**
    * Attach a human-facing note to a card (`dev3 note add`, `@file` for long
