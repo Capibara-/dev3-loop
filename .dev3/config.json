@@ -1,0 +1,7 @@
+{
+  "setupScript": "bun install",
+  "clonePaths": ["node_modules"],
+  "defaultBaseBranch": "master",
+  "defaultCompareRefMode": "remote",
+  "peerReviewEnabled": true
+}
