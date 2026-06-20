@@ -1,0 +1,319 @@
+/**
+ * The reconcile state machine — `decide()` (PLAN §6).
+ *
+ * PURE module: no I/O, no adapter imports. Given the durable journal, the resolved
+ * policy, and a cheap {@link Observation} snapshot, it returns the **ordered**
+ * {@link Action} list the imperative shell should execute this tick (`[]` = NoOp;
+ * Finding #4). Every decision is re-derivable from durable state, so the loop is
+ * level-triggered and crash-safe.
+ *
+ * Two pillars from PLAN §2 are encoded here:
+ *  - **The producer's self-report is never trusted.** A present `.dev3/result.json`
+ *    with `status:"done"` triggers a `RunChecks` we run ourselves; `claimedTestsPass`
+ *    is ignored. The green/red verdict comes from `journal.attempts` (the journaled
+ *    result of a prior `RunChecks`), **never** from `obs`.
+ *  - **The grader verdict drives routing, not the board lane.** dev-3.0's hardcoded
+ *    on-exit hook may have force-advanced the card `review-by-ai → review-by-user`
+ *    (DISCOVERY §Q5), so we route off `review.json` from **either** review lane.
+ *
+ * Guardrail caps (consecutive-failure / iteration / no-progress / oscillation /
+ * stall / budget) are M3. They are injected here as a single {@link GiveUpPredicate}
+ * and **defaulted to {@link allowAll}** (never give up) — this module implements
+ * none of that logic.
+ *
+ * @module domain/reconcile
+ */
+
+import type {
+  Action,
+  Card,
+  CardJournal,
+  CardPolicy,
+  CustomColumnId,
+  Lane,
+} from "./types.ts";
+import type { GraderReview, Observation } from "../ports/dto.ts";
+
+/**
+ * Verdict of a guardrail give-up check (PLAN §7). `stop:true` ⇒ abandon the card
+ * to the human; `reason` is the diagnostic recorded on the {@link Action} kind
+ * `"GiveUp"`.
+ */
+export interface GiveUpVerdict {
+  stop: boolean;
+  reason?: string;
+}
+
+/**
+ * The guardrail give-up check, injected into {@link decide} (PLAN §7, evaluated
+ * before any fix re-prompt and while a card is still working). M1 ships only the
+ * {@link allowAll} stub; the real predicate (caps, no-progress, oscillation,
+ * stall, budget) lands in M3. It receives `obs` as well as the journal so stall /
+ * dead-session detection has the inputs it needs (a superset of PLAN §7's
+ * `(journal, policy, now)` signature).
+ */
+export type GiveUpPredicate = (
+  journal: CardJournal,
+  policy: CardPolicy,
+  obs: Observation,
+  now: number,
+) => GiveUpVerdict;
+
+/** The M1 default give-up predicate: never give up (guardrails are M3). */
+export const allowAll: GiveUpPredicate = () => ({ stop: false });
+
+/**
+ * Well-known id of the no-agent **merge-trigger** custom column (PLAN §6). Moving
+ * a card here is the human's "merge it" signal. The real id is repo-configured
+ * (resolved in M4); we treat this conventional value as the trigger and leave
+ * **every other** custom column untouched (Finding #6a).
+ */
+export const READY_TO_MERGE: CustomColumnId = "ready_to_merge";
+
+/** The empty action list — the canonical NoOp (Finding #4). */
+const NOOP: Action[] = [];
+
+/** Last journaled attempt, or `undefined` when the card has never been attempted. */
+function lastAttempt(journal: CardJournal): CardJournal["attempts"][number] | undefined {
+  return journal.attempts[journal.attempts.length - 1];
+}
+
+/** True iff some recorded attempt was over this exact diff (edge-detection, Finding #2). */
+function attemptedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
+  return diffHash !== undefined && journal.attempts.some((a) => a.diffHash === diffHash);
+}
+
+/** Build a `MoveLane`, omitting `expect`/`note` when absent (exactOptionalPropertyTypes). */
+function moveLane(
+  card: Card,
+  to: Lane | CustomColumnId,
+  expect?: Lane | CustomColumnId,
+  note?: string,
+): Action {
+  const action: Extract<Action, { kind: "MoveLane" }> = { kind: "MoveLane", card, to };
+  if (expect !== undefined) action.expect = expect;
+  if (note !== undefined) action.note = note;
+  return action;
+}
+
+/** Findings text for a producer fix-loop after our mechanical checks went red. */
+function checkFailureFindings(card: Card, journal: CardJournal): string {
+  const last = lastAttempt(journal);
+  const sig = last?.failureSignature ? ` (failure signature ${last.failureSignature})` : "";
+  return (
+    `Mechanical checks failed${sig}. Re-run \`${card.policy.checksCmd}\` in the ` +
+    `worktree, fix the failing tests, then re-write .dev3/result.json when done.`
+  );
+}
+
+/** Findings text routed back to the producer when the grader requests changes. */
+function graderFindings(review: GraderReview): string {
+  const blocking = review.blocking.length > 0 ? review.blocking : ["(grader requested changes)"];
+  return `The independent grader requested changes:\n- ${blocking.join("\n- ")}`;
+}
+
+/**
+ * Merge-gate dispatch on `policy.merge` (PLAN §6). Returns the action(s) that take
+ * a card across the human merge gate for the given policy. `expect` on `Merge` is
+ * {@link READY_TO_MERGE}: the adapter re-verifies the column **and** `isMerged`
+ * immediately before the irreversible push (CAS guard, Finding #7).
+ */
+export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJournal): Action[] {
+  switch (policy.merge) {
+    case "open_pr":
+      // run → open PR → stop; the human merges on GitHub.
+      return [{ kind: "OpenPr", card }];
+    case "merge_when_green": {
+      // Only auto-merge a checked-green head (defensive; the loop already gated it).
+      if (lastAttempt(journal)?.outcome !== "green") return NOOP;
+      return [{ kind: "Merge", card, expect: READY_TO_MERGE }];
+    }
+    case "fix_until_green_and_merge":
+      // The in-progress/grader fix-loop already enforced green + grader-pass.
+      return [{ kind: "Merge", card, expect: READY_TO_MERGE }];
+    default:
+      return assertNever(policy.merge);
+  }
+}
+
+/**
+ * Apply a human resume (PLAN §6, Finding #6b): dragging a card out of
+ * `user-questions` back to `in-progress` means "blocker resolved, retry". Resets
+ * `consecutiveFailures` and clears `journal.terminal` (so a deliberately-revived
+ * card isn't still flagged `given_up`) while **preserving** the absolute attempt
+ * history (`attempts`, the total-attempts cap input). Pure: returns a new journal.
+ */
+export function applyHumanResume(journal: CardJournal): CardJournal {
+  const { terminal, ...rest } = journal;
+  void terminal; // intentionally dropped
+  return { ...rest, consecutiveFailures: 0 };
+}
+
+/**
+ * The reconcile decision (PLAN §6). Pure: `Action[]` only, no I/O. `[]` = NoOp.
+ *
+ * Routing key = the card's **custom column if set, else its built-in `lane`**.
+ *
+ * @param card     Read-only board projection.
+ * @param journal  Durable per-card bookkeeping (the source of truth for state).
+ * @param policy   Resolved per-card policy.
+ * @param obs      Cheap side-effect-free snapshot (§4); the check outcome is NOT
+ *                 read from here — it comes from `journal.attempts`.
+ * @param now      Epoch ms (from `ClockPort.now`).
+ * @param shouldGiveUp  Guardrail predicate; defaults to {@link allowAll} (M3 stub).
+ */
+export function decide(
+  card: Card,
+  journal: CardJournal,
+  policy: CardPolicy,
+  obs: Observation,
+  now: number,
+  shouldGiveUp: GiveUpPredicate = allowAll,
+): Action[] {
+  const key: Lane | CustomColumnId =
+    card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
+
+  switch (key) {
+    case "todo":
+      // decide() always PROPOSES the promotion; the shell's fleet gate (§7) grants
+      // or denies the slot. The MoveLane triggers dev-3.0's activateTask (worktree +
+      // producer); LaunchProducer is a no-op on the default in-band adapter (#4).
+      return [moveLane(card, "in-progress", "todo"), { kind: "LaunchProducer", card }];
+
+    case "in-progress":
+      return decideInProgress(card, journal, policy, obs, now, shouldGiveUp);
+
+    case "review-by-ai":
+    case "review-by-user":
+      // Verdict-driven: route off review.json from EITHER review lane (§Q5).
+      return decideReview(key, card, journal, policy, obs, now, shouldGiveUp);
+
+    case "review-by-colleague":
+      // The open_pr outcome lane ("PR Review"): ensure the PR exists, then park.
+      if (journal.terminal === "pr_opened") return NOOP;
+      return [{ kind: "OpenPr", card }];
+
+    case "user-questions":
+      // Human owns this lane (blocked / given-up). Resume happens when they drag
+      // the card back to in-progress (see applyHumanResume).
+      return NOOP;
+
+    case "completed":
+    case "cancelled":
+      // Observe-only terminal — never written by us.
+      return NOOP;
+
+    default:
+      // A custom column. The merge-trigger is the only one we own (Finding #6a).
+      if (key === READY_TO_MERGE) {
+        if (obs.merged || journal.terminal === "merged") return NOOP; // exactly-once
+        return mergeGateAction(card, policy, journal);
+      }
+      return NOOP; // any other custom column is unmanaged — never touch it
+  }
+}
+
+/** `in-progress` routing (PLAN §6). */
+function decideInProgress(
+  card: Card,
+  journal: CardJournal,
+  policy: CardPolicy,
+  obs: Observation,
+  now: number,
+  shouldGiveUp: GiveUpPredicate,
+): Action[] {
+  const triedThisDiff = attemptedDiff(journal, obs.diffHash);
+
+  // 1. Producer self-report present (its presence is the only thing we read from it).
+  if (obs.result) {
+    if (obs.result.status === "blocked") {
+      // Human handoff — NOT a failure: don't run checks, don't touch the caps,
+      // don't set terminal. Edge-detect by diffHash so a resumed card isn't
+      // immediately re-parked (Finding #5/#2).
+      if (!triedThisDiff) {
+        const note = obs.result.blockedQuestion ?? "Producer reported blocked.";
+        return [moveLane(card, "user-questions", "in-progress", note)];
+      }
+      return NOOP; // blocked already handled (sticky result.json)
+    }
+
+    // status === "done".
+    if (obs.diffHash === undefined) {
+      // Claims done but changed nothing vs base — degenerate (PLAN §10).
+      return [{ kind: "GiveUp", card, reason: "empty-diff" }];
+    }
+    if (!triedThisDiff) {
+      // Never trust claimedTestsPass — run the checks ourselves (PLAN §2 #8).
+      return [{ kind: "RunChecks", card }];
+    }
+    // This diff was already attempted: fall through to the journaled outcome —
+    // the result.json is sticky and must not re-fire RunChecks (Finding #2).
+  }
+
+  // 2. Route off the last journaled attempt. The shell folds BOTH RunChecks results
+  //    and grader verdicts into AttemptRecords, so a grader-rejected head reads as a
+  //    red attempt here (which then drives the producer fix-loop, not another grade).
+  const last = lastAttempt(journal);
+  if (last?.outcome === "green") {
+    // Green checks ⇒ hand to the independent grader. The MoveLane triggers dev-3.0's
+    // column agent; LaunchGrader is a no-op on the default in-band adapter (§8).
+    return [moveLane(card, "review-by-ai", "in-progress"), { kind: "LaunchGrader", card }];
+  }
+  if (last?.outcome === "red") {
+    const verdict = shouldGiveUp(journal, policy, obs, now);
+    if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
+    return [{ kind: "SendFixPrompt", card, findings: checkFailureFindings(card, journal) }];
+  }
+
+  // 3. Still working (no actionable result / attempt). Stall is one of the injected
+  //    give-up predicates (§7); with the default stub we simply wait.
+  const verdict = shouldGiveUp(journal, policy, obs, now);
+  if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "stall" }];
+  return NOOP;
+}
+
+/** `review-by-ai` / `review-by-user` routing — verdict-driven (PLAN §6, §Q5). */
+function decideReview(
+  key: Lane,
+  card: Card,
+  journal: CardJournal,
+  policy: CardPolicy,
+  obs: Observation,
+  now: number,
+  shouldGiveUp: GiveUpPredicate,
+): Action[] {
+  const review = obs.review;
+  if (!review) return NOOP; // grader still running / no verdict yet — human/grader gate
+
+  if (review.verdict === "changes_requested") {
+    // Only act on a FRESH rejection (the head that passed checks is the last, green
+    // attempt). Once the shell folds the rejection as a red attempt the last outcome
+    // flips and this stops re-firing on a sticky review.json (Finding #2).
+    if (lastAttempt(journal)?.outcome !== "green") return NOOP;
+    const verdict = shouldGiveUp(journal, policy, obs, now);
+    if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
+    // Move active→active (dev-3.0 does NOT respawn) and route findings to the
+    // still-alive producer. `--if-status <key>` also no-ops dev-3.0's on-exit
+    // auto-advance from review-by-ai (Finding #4).
+    return [moveLane(card, "in-progress", key), { kind: "SendFixPrompt", card, findings: graderFindings(review) }];
+  }
+
+  // verdict === "pass".
+  if (key === "review-by-ai") {
+    if (policy.merge === "open_pr") {
+      // run → open PR → stop; park it in the "PR Review" lane for the human.
+      return [{ kind: "OpenPr", card }, moveLane(card, "review-by-colleague", "review-by-ai")];
+    }
+    // Hand to the human gate (or let dev-3.0's on-exit hook do the same move).
+    return [moveLane(card, "review-by-user", "review-by-ai")];
+  }
+
+  // review-by-user, pass: the human gate holds until they signal merge (by moving
+  // the card to the ready_to_merge column — handled by the custom-column route).
+  return NOOP;
+}
+
+/** Exhaustiveness guard: a `never` here means a union member is unhandled. */
+function assertNever(x: never): never {
+  throw new Error(`unreachable: ${JSON.stringify(x)}`);
+}

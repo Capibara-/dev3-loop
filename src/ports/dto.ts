@@ -147,3 +147,41 @@ export interface LoopEvent {
   /** Free-form structured detail (reason, target lane, signature, spend, …). */
   detail?: Record<string, unknown>;
 }
+
+/**
+ * The cheap, side-effect-free snapshot the imperative shell gathers each tick and
+ * hands to the pure `decide()` (PLAN §4). **Reads only** (idempotent): it never
+ * runs the checks command and never mutates anything. Gathered **lane-gated** —
+ * skip terminal/`todo` cards, never blind-probe tmux (`capture-pane` hangs on
+ * control-mode sessions, DISCOVERY §Q3), and guard every read with a timeout.
+ *
+ * NOT here, on purpose:
+ *  - the green/red check outcome — that is the journaled result of a `RunChecks`
+ *    {@link Action} (folded into an `AttemptRecord` and read back by the next
+ *    tick from `journal.attempts`), never a per-tick read;
+ *  - fleet slot availability — a promotion budget the shell spends sequentially
+ *    across cards (PLAN §7), not a per-card field.
+ *
+ * Lives here (not in `domain/types.ts`) to avoid an import cycle: this module
+ * already imports {@link Action} from there, and `reconcile.ts` imports this.
+ */
+export interface Observation {
+  /** `.dev3/result.json` (producer done-signal), or null if absent/unparseable. */
+  result: ProducerResult | null;
+  /** `.dev3/review.json` (grader verdict), or null if absent/unparseable. */
+  review: GraderReview | null;
+  /** Whether the card's tmux session/pane still exists. */
+  alive: boolean;
+  /** Whether the branch is already merged into base (exactly-once guard). */
+  merged: boolean;
+  /** Latest activity timestamp (terminal-preview delta / worktree mtime) — stall calc. */
+  heartbeatAt?: number;
+  /**
+   * Hash of the current `base...branch` diff — the edge-detector that stops the
+   * level-triggered loop re-firing on a *sticky* `result.json` (Finding #2) plus
+   * the oscillation signal (PLAN §7/§10). **Absent ⇒ an empty diff** (no changes
+   * vs base): a present `result.json` over an absent `diffHash` is the degenerate
+   * "done but changed nothing" → give up (PLAN §10).
+   */
+  diffHash?: string;
+}
