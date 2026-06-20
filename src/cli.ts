@@ -3,7 +3,7 @@
  * `dev3-loop` CLI entrypoint (M0/T2 — PLAN.md §12).
  *
  * Subcommand handlers are stubs that print "not implemented yet"; they get
- * wired up in later milestones (run=M7+, dry-run=M7, replay=M2, doctor=M4).
+ * wired up in later milestones (run=M7+, dry-run=M7, replay=M2, preflight=M4).
  * Argument parsing lives in the pure {@link parseArgs} so it is unit-testable
  * without touching `process`/`Bun`.
  */
@@ -24,7 +24,7 @@ declare global {
 }
 
 /** Subcommands the loop will eventually expose (PLAN.md §12). */
-export const SUBCOMMANDS = ["run", "dry-run", "replay", "doctor"] as const;
+export const SUBCOMMANDS = ["run", "dry-run", "replay", "preflight"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 
 /** Pure result of {@link parseArgs}; never performs I/O. */
@@ -40,7 +40,7 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
   run: "Reconcile the board continuously (not implemented yet)",
   "dry-run": "Print the action plan without mutating anything (not implemented yet)",
   replay: "Rebuild journal state from the event log (not implemented yet)",
-  doctor: "Locate and validate the dev-3.0 store + config (not implemented yet)",
+  preflight: "Validate the dev-3.0 store + config before running (not implemented yet)",
 };
 
 /** Version string, single-sourced from package.json. */
@@ -55,7 +55,7 @@ export function usage(): string {
     "Usage: dev3-loop <command> [options]",
     "",
     "Commands:",
-    ...SUBCOMMANDS.map((c) => `  ${c.padEnd(9)} ${SUBCOMMAND_HELP[c]}`),
+    ...SUBCOMMANDS.map((c) => `  ${c.padEnd(10)} ${SUBCOMMAND_HELP[c]}`),
     "",
     "Options:",
     "  -h, --help     Print this help and exit",
