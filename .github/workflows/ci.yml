@@ -55,14 +55,17 @@ jobs:
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
-          # GitHub-hosted runners have no working IPv6. npm's Cloudflare CDN
-          # publishes AAAA records, and bun's installer tries IPv6 first ->
-          # ConnectionRefused/FailedToOpenSocket, even though curl (IPv4) works.
-          # Pin the registry to its IPv4 address so bun can't attempt IPv6.
-          NPM_IP="$(getent ahostsv4 registry.npmjs.org | awk 'NR==1{print $1}')"
-          echo "Pinning registry.npmjs.org -> ${NPM_IP} (IPv4)"
-          echo "${NPM_IP} registry.npmjs.org" | sudo tee -a /etc/hosts
-          bun install --frozen-lockfile
+          # Root cause (proven by the diagnostic above): this runner has no
+          # working IPv6 egress, npm's Cloudflare CDN publishes AAAA records, and
+          # bun's installer tries IPv6 and hard-fails (ConnectionRefused /
+          # FailedToOpenSocket) without falling back to IPv4 -- while curl(IPv4)
+          # downloads fine. bun ignores /etc/hosts (own DNS resolver), so disable
+          # IPv6 at the kernel level to force IPv4. Lower network concurrency to
+          # avoid the socket pressure behind FailedToOpenSocket.
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.lo.disable_ipv6=1
+          bun install --frozen-lockfile --network-concurrency 4
 
       - name: Save node_modules cache
         if: steps.cache-deps.outputs.cache-hit != 'true'
