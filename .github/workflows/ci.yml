@@ -10,11 +10,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pin Bun: floating to latest pulled in 1.3.14, which fails to reach the
+      # npm registry (ConnectionRefused on every tarball). 1.3.10 is the version
+      # the upstream dev-3.0 repo uses and installs cleanly.
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      # Cache node_modules so green runs never touch the registry again. Keyed on
+      # the lockfile hash; only a lockfile change forces a fresh install.
+      - name: Restore node_modules cache
+        id: cache-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: ./node_modules
+          key: bun-deps-linux-x64-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
-        run: bun install
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Save node_modules cache
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ./node_modules
+          key: bun-deps-linux-x64-${{ hashFiles('bun.lock') }}
 
       - name: Typecheck
         run: bun run typecheck
