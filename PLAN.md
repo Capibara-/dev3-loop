@@ -85,16 +85,28 @@ The **reconcile loop** (the heart):
 ```
 loop forever:
   tick():
-    cards   = boardPort.listCards()          // observed desired state (human can edit)
+    cards   = boardPort.listCards()           // observed desired state (human can edit)
     journal = journalPort.loadAll()           // our durable bookkeeping
+    slots   = fleet.promotionBudget(cards, journal)  // fleet-level, consumed below (§7)
     for card in cards:
-      desired = decide(card, journal[card.id])   // PURE: returns an Action
-      if desired is not NoOp:
-        eventLog.append(intent(desired))         // write-ahead
-        execute(desired)                          // idempotent adapter calls
-        eventLog.append(done(desired))
-        journalPort.persist(updated bookkeeping)
+      obs     = observe(card)                 // CHEAP idempotent reads only (see below)
+      actions = decide(card, journal[card.id], policyFor(card), obs, now())  // PURE → Action[]
+      for a in actions:                        // [] = NoOp; ordered, executed in sequence
+        if a is a promotion and slots <= 0: continue   // fleet gate (§7)
+        eventLog.append(intent(a))            // write-ahead, per action
+        result = execute(a)                   // idempotent adapter calls (the only I/O)
+        if a is a promotion: slots -= 1        // consume one fleet slot
+        journalPort.persist(fold(result into journal[card.id]))  // e.g. RunChecks→AttemptRecord
+        eventLog.append(done(a))
     sleep(tickInterval)   // fs.watch can wake us early; full reconcile still runs
+
+// observe() gathers ONLY cheap, side-effect-free reads → an Observation (§4),
+// lane-gated (skip terminal/todo cards; never blind-probe tmux — capture-pane hangs
+// on control-mode sessions, §Q3). It NEVER runs the checks command: RunChecks is an
+// Action decide() *emits*; its CheckResult is folded into the journal (AttemptRecord)
+// by the shell and read back by the NEXT tick's decide(). Fleet slot availability is
+// the promotion budget `slots`, consumed sequentially as promotions are emitted (§7),
+// not a per-card obs field.
 ```
 
 `decide()` is pure and exhaustively unit-tested. `execute()` is the only thing that performs I/O.
@@ -182,17 +194,65 @@ export interface CardJournal {
   terminal?: "merged" | "pr_opened" | "given_up" | "cancelled";
 }
 
-/** Pure result of decide(). Adapters interpret these; the domain never does I/O. */
+/** A single effect. `decide()` returns an ORDERED `Action[]` (NoOp = `[]`); the
+ *  shell executes them in sequence with per-action write-ahead (Finding #4). A
+ *  compound row like changes_requested ⇒ `[MoveLane→in-progress, SendFixPrompt]`.
+ *  Adapters interpret these; the domain never does I/O. */
 export type Action =
   | { kind: "NoOp" }
+  /** Launch the producer. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
+   *  in-progress` already triggered dev-3.0's `activateTask` (worktree + PTY,
+   *  prompt = `task.description`). Carries real work only for an out-of-band
+   *  adapter. So `decide()` may emit it next to the move without double-launching. */
   | { kind: "LaunchProducer"; card: Card }
   | { kind: "RunChecks"; card: Card }
+  /** Launch the grader. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
+   *  review-by-ai` already triggered dev-3.0's column agent (with our
+   *  `builtinColumnAgents` override, §8/§Q5). Real work only out-of-band. */
   | { kind: "LaunchGrader"; card: Card }
   | { kind: "SendFixPrompt"; card: Card; findings: string }
-  | { kind: "MoveLane"; card: Card; to: Lane | CustomColumnId; expect?: Lane; note?: string }
-  | { kind: "Merge"; card: Card }
+  | { kind: "MoveLane"; card: Card; to: Lane | CustomColumnId; expect?: Lane | CustomColumnId; note?: string }
+  /** Exactly-once merge. `expect` = the lane/column we believe authorizes the merge
+   *  (e.g. `ready_to_merge`); the adapter re-verifies `expect` AND `isMerged`
+   *  immediately before the irreversible push and no-ops if either changed — a CAS
+   *  guard on the highest-stakes action (Finding #7). */
+  | { kind: "Merge"; card: Card; expect?: Lane | CustomColumnId }
   | { kind: "OpenPr"; card: Card }
   | { kind: "GiveUp"; card: Card; reason: string };
+
+/**
+ * The cheap, side-effect-free snapshot the imperative shell gathers each tick and
+ * hands to the pure `decide()`. **Reads only** (idempotent): it never runs the
+ * checks command and never mutates anything. Gathered **lane-gated** — skip
+ * terminal/`todo` cards, and never blind-probe tmux (`capture-pane` hangs on
+ * control-mode sessions, DISCOVERY §Q3); guard every read with a timeout so a hang
+ * can't stall the tick.
+ *
+ * NOT here, on purpose:
+ *  - the green/red check outcome — that is the result of a `RunChecks` Action,
+ *    folded into an `AttemptRecord` by the shell and read back from
+ *    `journal.attempts` by the next tick (running checks is an effect, not a read);
+ *  - fleet slot availability — that is a promotion budget the shell consumes
+ *    sequentially across cards (§7), not a per-card field.
+ *
+ * Placement note (avoid an import cycle): `dto.ts` already imports `Action` from
+ * here, so define `Observation` alongside the DTOs in `ports/dto.ts` (or a small
+ * `domain/observation.ts`) and have `reconcile.ts` import it — not in this file.
+ */
+export interface Observation {
+  /** `.dev3/result.json` (producer done-signal), or null if absent/unparseable. */
+  result: ProducerResult | null;
+  /** `.dev3/review.json` (grader verdict), or null if absent/unparseable. */
+  review: GraderReview | null;
+  /** Whether the card's tmux session/pane still exists. */
+  alive: boolean;
+  /** Whether the branch is already merged into base (exactly-once guard). */
+  merged: boolean;
+  /** Latest activity timestamp (terminal-preview delta / worktree mtime) — stall calc. */
+  heartbeatAt?: number;
+  /** Hash of the current `base...branch` diff — edge-detection (Finding #2) + oscillation. */
+  diffHash?: string;
+}
 ```
 
 ---
@@ -209,7 +269,7 @@ export interface BoardPort {
   /** Move to a built-in status OR a customColumnId, guarded by an optional
    *  expected-current status (→ `dev3 task move --status <to> --if-status
    *  <expect>`), giving server-enforced compare-and-set. DISCOVERY §Q2-bis. */
-  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane): Promise<void>;
+  moveCard(id: string, to: Lane | CustomColumnId, expect?: Lane | CustomColumnId): Promise<void>;
   addNote(id: string, note: string): Promise<void>;     // `dev3 note add` (@file for long)
   setOverview(id: string, text: string): Promise<void>; // `dev3 overview set` — live counters on card
   watch?(onChange: () => void): () => void;             // optional fs.watch; returns disposer
@@ -232,9 +292,17 @@ export interface RuntimePort {                  // tmux + worktree driver
 export interface GitPort {
   diff(card: Card): Promise<string>;            // base...branch
   runChecks(card: Card, cmd: string): Promise<CheckResult>; // in worktree
-  isMerged(card: Card): Promise<boolean>;       // idempotency check
-  merge(card: Card): Promise<MergeResult>;      // fast-forward/no-ff into base, push
-  openPr(card: Card): Promise<PrResult>;        // gh CLI
+  isMerged(card: Card): Promise<boolean>;       // CONTENT/PR-aware (Finding #9): squash
+                                                // merge rewrites SHAs, so ancestor checks
+                                                // give false negatives → re-merge dupes.
+                                                // Use patch-id/merge-tree OR `gh pr` merged
+                                                // state, never just `--is-ancestor`.
+  merge(card: Card): Promise<MergeResult>;      // DEFAULT = push + `gh pr merge` (server-side,
+                                                // no local checkout of base; user worktree
+                                                // untouched). Completion is ASYNC under
+                                                // `--auto` (gated by GitHub checks/branch
+                                                // protection) → poll isMerged over ticks.
+  openPr(card: Card): Promise<PrResult>;        // gh CLI (requires a GitHub remote)
 }
 
 export interface JournalPort {
@@ -253,7 +321,14 @@ export interface ConfigPort { policyFor(card: Card): Promise<CardPolicy>; }
 
 ## 6. The reconcile algorithm (`src/domain/reconcile.ts`)
 
-`decide(card, journal, policy, now): Action` — pure. Routing key = the card's
+`decide(card, journal, policy, obs, now): Action[]` — pure, returns an **ordered
+action list** (`[]` = NoOp; Finding #4). `obs` is the cheap,
+side-effect-free {@link Observation} snapshot (§4) the shell gathers each tick;
+`decide()` itself does **no I/O**. Critically, the **green/red check outcome is
+read from `journal.attempts`** — it is the journaled result of a prior `RunChecks`
+**Action**, *not* a field of `obs`. Running the checks command (`policy.checksCmd`,
+e.g. `bun run test && tsc`) is an expensive effect the core *decides to emit*, never
+an observation gathered every tick. Routing key = the card's
 **custom column if set, else its `lane`**. Critically, the grader **verdict
 (`review.json`) is authoritative, not the lane** — because dev-3.0's hardcoded
 on-exit hook force-advances `review-by-ai → review-by-user` on a clean grader
@@ -264,23 +339,27 @@ the adapter can issue a guarded `--if-status` compare-and-set move.
 
 | Routing key | Condition | Action |
 |---|---|---|
-| `todo` | fleet slot free (§7) | `MoveLane → in-progress` (dev-3.0 spawns worktree+agent) then `LaunchProducer` |
-| `todo` | no slot | `NoOp` (fleet cap holds promotion) |
+| `todo` | promotion budget available (§7, shell gate) | `[MoveLane → in-progress, LaunchProducer]` — the move triggers dev-3.0's `activateTask` (worktree+producer, prompt=`task.description`); `LaunchProducer` is a no-op on the default in-band adapter (Finding #4) |
+| `todo` | budget exhausted | `[]` (NoOp; shell holds promotion — §7) |
 | `in-progress` | no `result.json`, within `stallMs`, alive | `NoOp` (still working) |
 | `in-progress` | stalled (heartbeat > `stallMs`) / dead | `GiveUp("stall")` → `MoveLane → user-questions` |
-| `in-progress` | `result.json` present | `RunChecks` (never trust `claimedTestsPass`) |
-| `in-progress` | checks **red** & guardrails allow | record red; `SendFixPrompt(findings)` (stay) |
-| `in-progress` | checks **red** & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
-| `in-progress` | checks **green** | `MoveLane → review-by-ai` then `LaunchGrader` (§8) |
+| `in-progress` | `result.json` `status="blocked"`, its `diffHash` **not yet acted on** | `[MoveLane → user-questions, note: blockedQuestion]` — human handoff, **not** `RunChecks`, **not** a failure (don't touch `consecutiveFailures`/caps; not `terminal`). Record a non-counting `blocked` attempt for the `diffHash` so the human's resume isn't bounced straight back (Finding #5/#2) |
+| `in-progress` | `result.json` `status="done"`, its `diffHash` **not yet attempted**, diff non-empty | `RunChecks` (never trust `claimedTestsPass`) |
+| `in-progress` | `result.json` present but its `diffHash` **already acted on** (stale/sticky signal) | `NoOp` — already handled; await the producer's *next* finish (Finding #2) |
+| `in-progress` | `result.json` present, diff **empty** (claims done, changed nothing) | `GiveUp("empty-diff")` → `MoveLane → user-questions` |
+| `in-progress` | last journaled attempt **red** & guardrails allow | `SendFixPrompt(findings)` (stay) — the shell already recorded the red `AttemptRecord` |
+| `in-progress` | last journaled attempt **red** & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
+| `in-progress` | last journaled attempt **green** | `[MoveLane → review-by-ai, LaunchGrader]` — the move triggers dev-3.0's column agent; `LaunchGrader` is a no-op on the default in-band adapter (§8) |
 | `review-by-ai` / `review-by-user` | no `review.json` yet, grader alive | `NoOp` |
-| `review-by-ai` / `review-by-user` | `review.json`=`changes_requested` & guardrails allow | record red; `MoveLane → in-progress` + `SendFixPrompt` (this also no-ops the on-exit auto-advance via the `--if-status review-by-ai` guard) |
+| `review-by-ai` / `review-by-user` | `review.json`=`changes_requested`, its `diffHash` not yet acted on, guardrails allow | `[MoveLane → in-progress, SendFixPrompt]` — move is `active→active` so dev-3.0 does **not** respawn (Finding #4); the still-alive producer pane gets the fix (or `--resume`, §8). The `--if-status review-by-ai` guard also no-ops dev-3.0's on-exit auto-advance. Edge-detected by `diffHash` so a sticky `review.json` doesn't re-send (Finding #2) |
 | `review-by-ai` / `review-by-user` | `review.json`=`changes_requested` & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
 | `review-by-ai` | `review.json`=`pass` | `MoveLane → review-by-user` (let the human gate hold; or let the on-exit hook do it) |
 | `review-by-user` | `review.json`=`pass`, human hasn't acted | `NoOp` (human gate) |
 | `review-by-user` | human signalled merge (moved to `ready_to_merge` custom col, or merge label) | dispatch on `policy.merge` (below) |
 | `review-by-colleague` | — | treated as the `open_pr` outcome lane: ensure PR exists, then `NoOp` |
-| `ready_to_merge`* (custom col) | `!isMerged` | `Merge` (guarded), then `addNote` result; leave human to archive |
+| `ready_to_merge`* (custom col) | `!isMerged` | `Merge` with `expect=ready_to_merge` (adapter re-verifies the column AND `isMerged` right before the push, no-ops if the human moved the card — Finding #7), then `addNote` result; leave human to archive |
 | `ready_to_merge`* (custom col) | `isMerged` already | `NoOp` (exactly-once) |
+| **any other** custom column (unmanaged) | — | `[]` (NoOp) — **default**: never touch a lane we don't own. `decide()` must be exhaustive over custom columns, not just `ready_to_merge` (Finding #6a) |
 | `completed` / `cancelled` | — | `NoOp` (observe-only terminal; never written by us) |
 
 \* `ready_to_merge` is a **custom column with no `agentConfig`** (so entering it
@@ -295,10 +374,29 @@ Merge-policy dispatch at the human gate:
 - `merge_when_green` → require last checks green, `Merge`.
 - `fix_until_green_and_merge` → the in-progress/grader fix-loop already enforced green+pass; `Merge`.
 
+**Merge model (Finding #9, M6 — design now, build later).** Default merge = **push +
+`gh pr merge`**, so GitHub merges server-side: no local checkout of base, the user's
+working copy is never touched, and the branch-checked-out-once rule can't bite (the
+worktree stays on its own branch). Consequences the reconciler must honor:
+- **`isMerged` is content/PR-aware**, not ancestor-based — a squash merge rewrites SHAs,
+  so `--is-ancestor` falsely reports "unmerged" and would trigger a duplicate merge
+  (exactly-once bug). Use patch-id/merge-tree or the PR's merged state.
+- **Merge completion is asynchronous** under `gh pr merge --auto` (GitHub gates on its own
+  required checks + branch protection — a second gate beyond our mechanical green). `Merge`
+  is therefore *initiate*, not *done*: the loop **polls** `isMerged` on later ticks and only
+  sets `terminal:"merged"` once the remote reflects it. Level-triggering already fits this.
+- **Assumption: a GitHub repo with `gh` authed.** Local-only / internal-git / non-GitHub
+  repos can't `gh pr merge` → fallback (local merge in a throwaway worktree, or dev-3.0's
+  `mergeTask` RPC). Decide scope in M6; default path is GitHub.
+
 Human edits are authoritative inputs (level-triggered, re-derived each tick):
 dragging a card out of `user-questions` back to `in-progress` = "blocker resolved,
-resume" → reset `consecutiveFailures` (**not** `totalAttempts`). Dragging to
-`cancelled`/`completed` (UI-only) ⇒ observe as terminal, stop reconciling.
+resume" → reset `consecutiveFailures` (**not** `totalAttempts`) **and clear
+`journal.terminal`** (Finding #6b): a card the human deliberately revived must not
+stay flagged `given_up`, or anything keying on `terminal` treats it as abandoned. (A
+`blocked` handoff, §5, never set `terminal` in the first place — same hazard avoided
+at the source.) Dragging to `cancelled`/`completed` (UI-only) ⇒ observe as terminal,
+stop reconciling.
 
 ---
 
@@ -308,15 +406,33 @@ resume" → reset `consecutiveFailures` (**not** `totalAttempts`). Dragging to
 
 - **Consecutive-failure cap:** `consecutiveFailures >= maxConsecutiveFailures`.
 - **Absolute iteration cap:** `attempts.length >= maxTotalAttempts`.
-- **No-progress (failure signature):** last `K=2` red attempts share the same `failureSignature` → flailing.
+- **No-progress (failure signature):** last `K=2` red attempts share the same `failureSignature` → flailing. **Must degrade gracefully (Finding #11a):** `failureSignature` is parsed from arbitrary `checksCmd` output and may be `undefined`. Signature absence is **never** load-bearing — when it can't be parsed, this predicate simply doesn't fire and we lean on `diffHash` (oscillation) + the always-present attempt caps. Never trip *or* skip give-up on a missing/garbage signature.
 - **Oscillation (diff hash):** a `diffHash` repeats across attempts → cycling between states.
 - **Stall:** `now - lastHeartbeatAt > stallMs` with no new output. Heartbeat source order (DISCOVERY §Q3): `getTerminalPreview` RPC delta → worktree file mtime → `task.updatedAt`/`movedAt` → raw `capture-pane` (timeout-guarded only; it hangs on control-mode sessions).
-- **Per-card budget:** `totalTokens > tokenBudget`.
+- **Per-card budget:** `totalTokens > tokenBudget`. **Source (Finding #8, confirmed):**
+  not dev-3.0's `logs/` (empty) — the **agent transcript** `~/.claude/projects/<enc(worktreePath)>/<sessionId>.jsonl`, `sessionId` from `task.sessionState.panes[]`,
+  summing per-turn `message.usage`. **Claude-specific** (a non-Claude grader needs its
+  own reader; the producer defaults to Claude); prefer **token-denominated** budgets —
+  a `$` ceiling needs a per-model pricing table. Read via an M4 usage adapter; the shell
+  folds it into `AttemptRecord.tokensSpent`/`totalTokens`. Inert until that adapter ships.
 
-Separately, fleet-level (`src/domain/fleet.ts`):
-- **Concurrency cap** (default 20): only promote `todo → in_progress` up to N live cards.
-- **Daily spend ceiling:** when exceeded, stop *promoting* new cards (drain in-flight).
-- **Circuit breaker:** if recent failure rate across cards > 50%, pause promotions and emit a `breaker_open` event.
+Separately, fleet-level (`src/domain/fleet.ts`) — these are **cross-card** concerns,
+computed in a pre-pass over the full card list and **enforced by the shell**, not by
+`decide()` (Finding #3). `decide()` only ever *proposes* a promotion (`MoveLane →
+in-progress` for a `todo` card whose turn has come); the shell's fleet gate grants or
+denies it:
+- **Concurrency cap** (default 20): `promotionBudget = cap − liveCount` is computed once
+  per tick and **consumed sequentially** — each *granted* promotion decrements it; when it
+  reaches 0 the remaining `todo` cards stay in `todo` this tick. A per-card boolean
+  `slotFree` would **race**: N todo cards would all be handed "free" and all promote in one
+  tick, blowing the cap (nothing decrements a shared boolean between decisions). The budget
+  is therefore a counter the shell spends, **not** an `Observation` field.
+- **Daily spend ceiling:** when exceeded, the gate forces `promotionBudget = 0` (stop
+  promoting new cards; let in-flight ones drain).
+- **Circuit breaker:** if the failure rate over the **last N=10 completed attempts
+  fleet-wide** (rolling window — define it explicitly so it's testable, Finding #11b)
+  exceeds 50%, force `promotionBudget = 0`, pause promotions, and emit a `breaker_open`
+  event. (N is a config knob; the window is attempts, not wall-clock.)
 
 On give-up: `MoveLane → user_questions`, `addNote` the diagnostic (`attempt n/N, signature, spend`), **leave the worktree intact**. Mirror live counters to the card via `addNote` each cycle so the human sees progress on the board.
 
@@ -361,17 +477,31 @@ alternative the domain never sees — `decide()` only ever emits `LaunchGrader`.
 ## 9. Persistence, idempotency, recovery (`src/adapters/fs/*`)
 
 - **Journal:** one JSON file per card under `${stateDir}/journal/<cardId>.json`. Atomic writes (write tmp, `rename`).
-- **Event log:** append-only NDJSON at `${stateDir}/events.ndjson`. Every intent/done pair, every lane move, every guardrail trip. This is the replayable spine; the journal is a derived projection you may rebuild from it.
-- **Write-ahead for effects:** before `Merge`/`OpenPr`, set `journal.pending[actionId] = {kind, startedAt}` and append intent; after success, clear and append done. On startup, for each `pending` entry, **verify reality** (`git.isMerged`, PR exists?) and reconcile — never blind-retry.
+- **Event log:** append-only NDJSON at `${stateDir}/events.ndjson`. Every intent/done pair, every lane move, every guardrail trip. It is an **audit/observability trace** (powers `replay` + the OPERATIONS story) — **not** a source of truth. The **journal is the single source of truth for state**; we do **not** maintain a "journal is rebuildable from the log" invariant (Finding #10). Correctness rests on the journal's `pending` write-ahead + reality-checks, not on event replay. (If a concrete journal-reconstruction need ever arises, add a replayer then — for that scenario, not as a standing invariant every write must uphold.)
+- **Write-ahead for effects:** before `Merge`/`OpenPr`, set `journal.pending[actionId] = {kind, startedAt}` and append intent; after success, clear and append done. On startup, for each `pending` entry, **verify reality** (`git.isMerged`, PR exists?) and reconcile — never blind-retry. Note (Finding #9): `isMerged` here must be **content/PR-aware** (squash safety), and a still-`pending` `Merge` under `gh pr merge --auto` is **not** a failure — auto-merge may simply not have fired yet, so re-poll the PR state rather than re-initiating.
 - **Crash test is a first-class requirement** (see §14): kill between intent and done, restart, assert exactly-once.
 
 ---
 
 ## 10. Agent prompt contracts (`src/prompts/*.md`, schemas in `dto.ts`)
 
+**Injection gap (Finding #4(A)):** dev-3.0 launches the producer with the raw
+`task.description` as prompt — there is **no per-project producer-prompt override**
+(unlike the grader's `builtinColumnAgents`). So this protocol can't ride in on the
+launch. Default resolution: commit it to the **repo's `AGENTS.md`/prompt file** (the
+agent runs in the worktree and reads it); the out-of-band adapter can inject it
+directly. Confirm the mechanism in M5.
+
+**"Stop" must mean idle, not exit (Finding #4(B)):** the pane is launched
+`keepShell:true`, so if the agent process exits the pane becomes a bare shell and
+`sendFixPrompt`'s send-keys would type into bash. The fix loop therefore requires the
+producer to stay an **interactive, idle** process, or the adapter to relaunch with
+`--resume <sessionId>` (dev-3.0 stores the id). Re-entry to `in-progress` does **not**
+respawn (active→active), so we own keeping the producer reachable.
+
 Producer launch prompt appends a fixed protocol:
 - Maintain `.dev3/progress.md` (tried / failed-because / next / invariants) and re-read it on resume.
-- On finish, write `.dev3/result.json` then stop:
+- On finish, write `.dev3/result.json` and go idle (do **not** exit the process):
 
 ```jsonc
 // .dev3/result.json
@@ -380,6 +510,12 @@ Producer launch prompt appends a fixed protocol:
   "blockedQuestion": "string|null",
   "claimedTestsPass": true }   // never trusted; we re-run
 ```
+
+`status` routes the card (Finding #5): **`done`** ⇒ run checks; **`blocked`** ⇒ a
+*human handoff*, not a failure — park to `user-questions` with `blockedQuestion` as
+the note, never run checks, never burn the failure caps, never mark `terminal`. The
+human answers and drags the card back to `in-progress` to resume. (Edge-detect the
+blocked `diffHash` so the resume isn't immediately re-parked — Finding #2.)
 
 Grader prompt (separate model, read-only, adversarial):
 ```jsonc
@@ -390,7 +526,9 @@ Grader prompt (separate model, read-only, adversarial):
   "ranChecks": true }
 ```
 
-Failure signature = stable hash of the sorted failing-test ids (fallback: normalized first error line). Diff hash = hash of `git diff base...branch`.
+Failure signature = stable hash of the sorted failing-test ids (fallback: normalized first error line). Best-effort across arbitrary `checksCmd` output — may be `undefined`, and the no-progress guardrail must tolerate that (Finding #11a, §7).
+
+**Diff hash** = hash of `git diff base...branch`, recorded on **every** `AttemptRecord`. Beyond oscillation detection it is the **edge-detector** that stops the level-triggered loop re-firing on a *sticky* `result.json` (Finding #2): `result.json` is never deleted by the producer, so under level-triggering `decide()` would re-run checks and re-`SendFixPrompt` every tick while the producer is still mid-fix. Rule: **`decide()` acts on a present `result.json` only when its `diffHash` is not already the `diffHash` of a recorded attempt.** Once an attempt is journaled for a given diff, that finished-state is ignored (`NoOp`) until the producer changes the code and re-announces done (new diff ⇒ new `diffHash` ⇒ exactly one new attempt). This is **orchestrator-side** — we do *not* trust the agent to clear `result.json` (same reason we never trust `claimedTestsPass`). A present `result.json` over an **empty** diff is the degenerate "done but changed nothing" → `GiveUp`. The same `diffHash` recurring across *different* attempts is the oscillation signal (§7).
 
 ---
 
@@ -434,7 +572,7 @@ dev3-loop/
 Core principle: **the domain is pure, so it's tested with zero I/O.** Adapters are thin and tested against real git (tmpdir) and real tmux (tagged).
 
 Mandatory unit tests (`tests/unit`):
-1. `decide()` returns the correct `Action` for **every** row of the §6 transition table (table-driven).
+1. `decide()` returns the correct `Action[]` for **every** row of the §6 transition table (table-driven; `[]` = NoOp, order asserted for compound rows).
 2. Producer self-report is ignored: `result.json.claimedTestsPass=true` but `runChecks` red ⇒ red path.
 3. Grader independence assertion: config with producer==grader ⇒ boot error.
 4. Grader only launches after green; non-compiling output never reaches `ai_review`.
@@ -445,7 +583,7 @@ Mandatory unit tests (`tests/unit`):
 
 Recovery tests (`tests/recovery`):
 9. Kill between `Merge` intent and done ⇒ restart ⇒ `isMerged` true ⇒ **no second merge** (exactly-once).
-10. Journal rebuildable from `events.ndjson` (replay equals live projection).
+10. `events.ndjson` is a faithful audit trace: every intent has a matching done (or an unresolved-on-crash marker), every lane move + guardrail trip is recorded, and `replay` reconstructs a readable timeline. (No "journal == replay projection" assertion — the journal is the source of truth, Finding #10.)
 11. Lost `fs.watch` event ⇒ next periodic reconcile still converges (level-triggered correctness).
 
 Integration tests (`tests/integration`, tagged, skip when binary missing):
@@ -568,7 +706,12 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   `FakeJournal`/`FakeEventLog`/`FixedClock`/`FakeConfig` for tests. (dep: T5)
 - **T7 `decide()` state machine.** `src/domain/reconcile.ts`: pure §6 table incl.
   verdict-driven routing + custom-column key + `MoveLane.expect`; merge-policy
-  dispatch. Excludes guardrail caps (M3) — stub the predicate as `allow`. (dep: T4,T5)
+  dispatch. Signature `decide(card, journal, policy, obs, now): Action[]` (`[]`=NoOp,
+  ordered; Finding #4) — `obs` is the cheap-reads {@link Observation} (§4); the
+  **check outcome comes from `journal.attempts`, never from `obs`** (running checks is
+  an emitted Action, not a read). Default in-band adapter makes `LaunchProducer`/
+  `LaunchGrader` no-ops (the `MoveLane` triggers dev-3.0's spawn). Excludes guardrail
+  caps (M3) — stub the predicate as `allow`. (dep: T4,T5)
 - **T8 `decide()` table tests.** table-driven every §6 row; producer self-report
   ignored (red wins); grader only after green; merge-policy dispatch; human
   override resets `consecutiveFailures` not `totalAttempts` (tests 1,2,4,7,8). (dep: T6,T7)
