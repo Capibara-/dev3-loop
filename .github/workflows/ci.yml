@@ -32,6 +32,12 @@ jobs:
           echo "===== GET real tarball (typescript) ====="
           curl -sS -o /dev/null -w 'http_code=%{http_code} time=%{time_total}s size=%{size_download}\n' \
             --max-time 30 https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz || true
+          echo "===== IPv4-only tarball ====="
+          curl -4 -sS -o /dev/null -w 'ipv4 http_code=%{http_code} time=%{time_total}s\n' \
+            --max-time 30 https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz || echo "ipv4 FAILED"
+          echo "===== IPv6-only tarball ====="
+          curl -6 -sS -o /dev/null -w 'ipv6 http_code=%{http_code} time=%{time_total}s\n' \
+            --max-time 30 https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz || echo "ipv6 FAILED"
           echo "===== CONTROL: HEAD https://github.com ====="
           curl -sS -I --max-time 20 https://github.com || true
           echo "===== proxy / npm env ====="
@@ -48,7 +54,15 @@ jobs:
 
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: bun install --frozen-lockfile
+        run: |
+          # GitHub-hosted runners have no working IPv6. npm's Cloudflare CDN
+          # publishes AAAA records, and bun's installer tries IPv6 first ->
+          # ConnectionRefused/FailedToOpenSocket, even though curl (IPv4) works.
+          # Pin the registry to its IPv4 address so bun can't attempt IPv6.
+          NPM_IP="$(getent ahostsv4 registry.npmjs.org | awk 'NR==1{print $1}')"
+          echo "Pinning registry.npmjs.org -> ${NPM_IP} (IPv4)"
+          echo "${NPM_IP} registry.npmjs.org" | sudo tee -a /etc/hosts
+          bun install --frozen-lockfile
 
       - name: Save node_modules cache
         if: steps.cache-deps.outputs.cache-hit != 'true'
