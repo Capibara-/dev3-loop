@@ -55,8 +55,12 @@ jobs:
       # Root cause (proven by the diagnostic above): this runner has no working
       # IPv6 egress; npm's Cloudflare CDN publishes AAAA records and bun tries
       # IPv6 and hard-fails (ConnectionRefused/FailedToOpenSocket) while IPv4
-      # works. Make the system resolver prefer IPv4 mappings over IPv6 so bun
-      # connects over IPv4.
+      # works. bun does its own DNS and ignores /etc/hosts, the kernel
+      # IPv6-disable, AND gai.conf -- so no host-level IPv4 preference reaches
+      # it. Node/npm use getaddrinfo, which honors gai.conf, so npm installs over
+      # IPv4. Use npm to produce node_modules; the bun runtime still runs the
+      # typecheck/test steps below. bun.lock stays the source of truth for local
+      # dev (where IPv6 works).
       - name: Force IPv4 preference (gai.conf)
         if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
@@ -65,7 +69,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: bun install --frozen-lockfile
+        run: npm install --no-audit --no-fund
 
       - name: Save node_modules cache
         if: steps.cache-deps.outputs.cache-hit != 'true'
