@@ -13,7 +13,9 @@
  *    ⇒ just clear the marker and let the level-triggered loop re-derive (the merge
  *    is idempotent + CAS-guarded, so re-emitting it is safe and **not** a blind
  *    retry of a half-done write).
- *  - `OpenPr` → analogous, keyed off whether a PR already exists.
+ *  - `OpenPr` → clear the marker and let the level-triggered loop re-derive on the
+ *    next tick. `openPr` is idempotent (`alreadyExisted`), so re-emitting it at most
+ *    opens one PR and has no harmful side-effects — no reality-check needed here.
  *
  * **Never blind-retry.** Recovery only ever *reads* to decide; it re-initiates
  * nothing itself. The journal is the source of truth — the event log is an audit
