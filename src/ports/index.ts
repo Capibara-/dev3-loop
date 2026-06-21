@@ -24,4 +24,5 @@ export type {
   GraderReview,
   LoopEvent,
   LoopEventType,
+  Observation,
 } from "./dto.ts";

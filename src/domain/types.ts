@@ -134,6 +134,17 @@ export interface AttemptRecord {
   startedAt: number;
   /** Epoch ms when the attempt ended, if finished. */
   endedAt?: number;
+  /**
+   * True once the orchestrator has dispatched the `SendFixPrompt` for this (red)
+   * attempt. The shell sets it when it sends the fix — both the mechanical-check
+   * red path and when it folds a grader `changes_requested` rejection (which is
+   * sent as part of the bounce). `decide()` reads it to deliver the fix **exactly
+   * once per attempt** rather than re-sending every tick while the never-deleted
+   * `.dev3/result.json` stays present (the sticky-result NoOp, PLAN §6 / Finding
+   * #2). Absent/false ⇒ not yet sent — also the safe post-crash default, since a
+   * re-send is harmless. Only meaningful on `red` attempts.
+   */
+  fixPromptSent?: boolean;
 }
 
 /**
