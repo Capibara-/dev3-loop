@@ -1,13 +1,13 @@
 /**
- * Recovery suite — PLAN §13 tests 9–11, run with the real fs persistence
- * adapters (`FsJournal`/`NdjsonEventLog`) over a throwaway tmpdir:
+ * Recovery suite, run with the real fs persistence adapters
+ * (`FsJournal`/`NdjsonEventLog`) over a throwaway tmpdir:
  *
- *  9. Crash between a `Merge` intent and its `done` ⇒ restart ⇒ `isMerged` true ⇒
- *     **no second merge** (write-ahead + exactly-once).
- * 10. `events.ndjson` is a faithful audit trace (every intent has a matching done,
- *     lane moves + guardrail trips recorded) and `replay` renders a timeline.
- * 11. A lost `fs.watch` event still converges on the next periodic reconcile
- *     (level-triggered correctness).
+ *  - Crash between a `Merge` intent and its `done` ⇒ restart ⇒ `isMerged` true ⇒
+ *    **no second merge** (write-ahead + exactly-once).
+ *  - `events.ndjson` is a faithful audit trace (every intent has a matching done,
+ *    lane moves + guardrail trips recorded) and `replay` renders a timeline.
+ *  - A lost `fs.watch` event still converges on the next periodic reconcile
+ *    (level-triggered correctness).
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createLoop } from "../../src/app/loop.ts";
@@ -27,9 +27,9 @@ afterEach(() => cleanup());
 
 const MERGE_COL = "ready_to_merge";
 
-// --- Test 9: exactly-once merge across a crash ----------------------------
+// --- exactly-once merge across a crash ------------------------------------
 
-describe("test 9 — exactly-once merge / write-ahead recovery", () => {
+describe("exactly-once merge / write-ahead recovery", () => {
   test("a clean merge tick records intent+done, clears pending, marks terminal", async () => {
     const card = mkCard({ customColumnId: MERGE_COL, lane: "review-by-user" });
     const h = wire(dir, [card]);
@@ -98,9 +98,9 @@ describe("test 9 — exactly-once merge / write-ahead recovery", () => {
   });
 });
 
-// --- Test 10: faithful audit trace + replay -------------------------------
+// --- faithful audit trace + replay ----------------------------------------
 
-describe("test 10 — events.ndjson audit trace + replay", () => {
+describe("events.ndjson audit trace + replay", () => {
   // Card B's seeded red head + this predicate ⇒ a guardrail trip (GiveUp).
   const stopOnRed: GiveUpPredicate = (journal) =>
     journal.attempts.some((a) => a.outcome === "red") ? { stop: true, reason: "cap" } : { stop: false };
@@ -150,9 +150,9 @@ describe("test 10 — events.ndjson audit trace + replay", () => {
   });
 });
 
-// --- Test 11: lost fs.watch event still converges -------------------------
+// --- lost fs.watch event still converges ----------------------------------
 
-describe("test 11 — level-triggered convergence after a lost watch event", () => {
+describe("level-triggered convergence after a lost watch event", () => {
   test("a finish that no watch signalled is still picked up by the next periodic tick", async () => {
     const card = mkCard({ id: "C", lane: "in-progress" });
     const h = wire(dir, [card]);

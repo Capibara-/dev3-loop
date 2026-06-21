@@ -3,9 +3,9 @@
  * `${stateDir}/events.ndjson` (one JSON object per line).
  *
  * This is an **audit/observability trace** that powers `replay` and the
- * operations story — explicitly **not** a source of truth (the journal is; PLAN
- * Finding #10). We therefore never read it back into state; the only reader is the
- * `replay` timeline ({@link read}). Appends are write-ahead: `intent` is logged
+ * operations story — explicitly **not** a source of truth (the journal is). We
+ * therefore never read it back into state; the only reader is the `replay`
+ * timeline ({@link read}). Appends are write-ahead: `intent` is logged
  * **before** an effectful action runs, `done` **after** it succeeds, correlated by
  * `actionId`.
  *

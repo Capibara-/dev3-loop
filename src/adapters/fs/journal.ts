@@ -7,8 +7,7 @@
  * is atomic, so a crash mid-write leaves either the old complete file or the new
  * complete file — **never a torn one**. The journal is the single source of truth
  * for loop state (the event log is a derived audit trace, never replayed back into
- * state — PLAN Finding #10), so this no-torn-file guarantee is what makes
- * crash-recovery correct.
+ * state), so this no-torn-file guarantee is what makes crash-recovery correct.
  *
  * @module adapters/fs/journal
  */

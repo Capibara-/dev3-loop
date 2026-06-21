@@ -429,9 +429,9 @@ function freshJournal(cardId: string): CardJournal {
 
 /**
  * The irreversible, exactly-once effects: a botched retry can't be undone, so they
- * get a journal-side write-ahead `pending` marker and a recovery reality-check
- * (PLAN §9). `MoveLane`/`RunChecks`/`SendFixPrompt`/launches are safe to repeat
- * (CAS-guarded or idempotent), so they don't.
+ * get a journal-side write-ahead `pending` marker and a recovery reality-check.
+ * `MoveLane`/`RunChecks`/`SendFixPrompt`/launches are safe to repeat (CAS-guarded
+ * or idempotent), so they don't.
  */
 function isIrreversible(action: Action): boolean {
   return action.kind === "Merge" || action.kind === "OpenPr";

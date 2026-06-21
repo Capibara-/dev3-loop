@@ -5,7 +5,7 @@
  * actionId]` marker **before** it runs and clears it **after** it succeeds (see
  * `app/loop.ts`). A crash between those two points leaves a dangling marker. On the
  * next boot — before the first tick — {@link recover} walks every journal's
- * pending set and **verifies reality** (PLAN §9):
+ * pending set and **verifies reality**:
  *
  *  - `Merge`  → ask `git.isMerged` (content/PR-aware, squash-safe). Merged ⇒ the
  *    effect actually completed: set `terminal:"merged"`, clear the marker, and
@@ -17,7 +17,7 @@
  *
  * **Never blind-retry.** Recovery only ever *reads* to decide; it re-initiates
  * nothing itself. The journal is the source of truth — the event log is an audit
- * trace and is never replayed into state (Finding #10).
+ * trace and is never replayed into state.
  *
  * @module app/recover
  */

@@ -13,7 +13,7 @@ async function capture(argv: readonly string[]): Promise<{ code: number; out: st
   return { code, out, err };
 }
 
-/** The subcommands still reporting "not implemented yet" (replay is implemented in M2). */
+/** The subcommands still reporting "not implemented yet" (replay is implemented). */
 const STUB_SUBCOMMANDS = ["run", "dry-run", "preflight"] as const;
 
 describe("parseArgs", () => {

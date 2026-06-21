@@ -3,8 +3,8 @@
  * timeline.
  *
  * The event log is an audit/observability trace, **not** a source of truth — so
- * replay reconstructs a *human timeline*, never journal state (PLAN Finding #10).
- * We keep a single `intent`/`done` stream and classify here by `action` kind:
+ * replay reconstructs a *human timeline*, never journal state. We keep a single
+ * `intent`/`done` stream and classify here by `action` kind:
  * a `MoveLane` event is a **lane move**, a `GiveUp` event is a **guardrail trip**,
  * a `Merge`/`OpenPr` event is an irreversible effect. Every `intent` should pair
  * with a `done` by `actionId`; an `intent` with no matching `done` is surfaced as
@@ -43,7 +43,7 @@ function iso(ts: number): string {
 /**
  * Classify an event's `action` kind into a timeline category. Pure; this is where
  * "lane move" and "guardrail trip" are *derived* (we don't emit dedicated event
- * types — Finding above).
+ * types).
  */
 function classify(action: LoopEvent["action"]): string {
   switch (action) {

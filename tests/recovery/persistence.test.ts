@@ -1,6 +1,6 @@
 /**
- * Adapter-level tests for the M2 fs persistence seam: `FsJournal` (atomic, one
- * file per card) and `NdjsonEventLog` (append-only, line-parseable). Real fs,
+ * Adapter-level tests for the fs persistence seam: `FsJournal` (atomic, one file
+ * per card) and `NdjsonEventLog` (append-only, line-parseable). Real fs,
  * throwaway tmpdir.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
