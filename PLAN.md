@@ -181,6 +181,12 @@ export interface AttemptRecord {
   tokensSpent?: number;
   startedAt: number;
   endedAt?: number;
+  /** set by the shell once it dispatched this (red) attempt's SendFixPrompt, so
+   *  decide() delivers the fix EXACTLY ONCE per attempt instead of re-sending it
+   *  every tick while the never-deleted result.json stays present (Finding #2,
+   *  §6 sticky-result NoOp). Per-attempt (not per-diff) → a repeated diff is a
+   *  new attempt = a fresh fix, keeping it compatible with the oscillation cap. */
+  fixPromptSent?: boolean;
 }
 
 export interface CardJournal {
@@ -347,7 +353,8 @@ the adapter can issue a guarded `--if-status` compare-and-set move.
 | `in-progress` | `result.json` `status="done"`, its `diffHash` **not yet attempted**, diff non-empty | `RunChecks` (never trust `claimedTestsPass`) |
 | `in-progress` | `result.json` present but its `diffHash` **already acted on** (stale/sticky signal) | `NoOp` — already handled; await the producer's *next* finish (Finding #2) |
 | `in-progress` | `result.json` present, diff **empty** (claims done, changed nothing) | `GiveUp("empty-diff")` → `MoveLane → user-questions` |
-| `in-progress` | last journaled attempt **red** & guardrails allow | `SendFixPrompt(findings)` (stay) — the shell already recorded the red `AttemptRecord` |
+| `in-progress` | last journaled attempt **red**, guardrails allow, fix **not yet sent** for it | `SendFixPrompt(findings)` (stay) — the shell already recorded the red `AttemptRecord`, and sets `fixPromptSent` on dispatch |
+| `in-progress` | last journaled attempt **red**, guardrails allow, `fixPromptSent` already set | `NoOp` — fix already delivered for this attempt; await the producer's next finish (this is the §6 sticky-result NoOp realized via `AttemptRecord.fixPromptSent`, Finding #2). Guardrails (incl. time-based stall) are still re-checked first, so a producer that then goes silent still gives up |
 | `in-progress` | last journaled attempt **red** & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
 | `in-progress` | last journaled attempt **green** | `[MoveLane → review-by-ai, LaunchGrader]` — the move triggers dev-3.0's column agent; `LaunchGrader` is a no-op on the default in-band adapter (§8) |
 | `review-by-ai` / `review-by-user` | no `review.json` yet, grader alive | `NoOp` |
@@ -479,6 +486,7 @@ alternative the domain never sees — `decide()` only ever emits `LaunchGrader`.
 - **Journal:** one JSON file per card under `${stateDir}/journal/<cardId>.json`. Atomic writes (write tmp, `rename`).
 - **Event log:** append-only NDJSON at `${stateDir}/events.ndjson`. Every intent/done pair, every lane move, every guardrail trip. It is an **audit/observability trace** (powers `replay` + the OPERATIONS story) — **not** a source of truth. The **journal is the single source of truth for state**; we do **not** maintain a "journal is rebuildable from the log" invariant (Finding #10). Correctness rests on the journal's `pending` write-ahead + reality-checks, not on event replay. (If a concrete journal-reconstruction need ever arises, add a replayer then — for that scenario, not as a standing invariant every write must uphold.)
 - **Write-ahead for effects:** before `Merge`/`OpenPr`, set `journal.pending[actionId] = {kind, startedAt}` and append intent; after success, clear and append done. On startup, for each `pending` entry, **verify reality** (`git.isMerged`, PR exists?) and reconcile — never blind-retry. Note (Finding #9): `isMerged` here must be **content/PR-aware** (squash safety), and a still-`pending` `Merge` under `gh pr merge --auto` is **not** a failure — auto-merge may simply not have fired yet, so re-poll the PR state rather than re-initiating.
+- **The shell folds every evaluation into an `AttemptRecord` — both `RunChecks` results AND grader verdicts.** A grader `changes_requested` is folded as a **red** attempt for that head (it is a failure; it feeds `consecutiveFailures` and the §7 circuit breaker). This is load-bearing for `decide()`: the in-progress branch routes fix-vs-regrade purely off the last attempt's outcome, so if a grader rejection were *not* recorded as red, a bounced card would read as still-`green` and ping-pong straight back to the grader. When the shell dispatches a `SendFixPrompt` (mechanical-red path **or** the grader-rejection bounce, which carries one), it sets `fixPromptSent` on that attempt — giving exactly-once fix delivery (§6).
 - **Crash test is a first-class requirement** (see §14): kill between intent and done, restart, assert exactly-once.
 
 ---
