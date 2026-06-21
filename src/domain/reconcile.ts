@@ -83,6 +83,21 @@ function attemptedDiff(journal: CardJournal, diffHash: string | undefined): bool
   return diffHash !== undefined && journal.attempts.some((a) => a.diffHash === diffHash);
 }
 
+/**
+ * True iff a **rejection** (red attempt) was already recorded for this exact diff —
+ * i.e. its `diffHash` has been "acted on" in the sense PLAN §6 row 354 uses for the
+ * grader fix-loop. A head that only passed checks has just a green attempt (not
+ * rejected yet); once the shell folds the grader's `changes_requested` as a red
+ * `AttemptRecord` for that head, this returns true and a sticky `review.json`
+ * stops re-sending the fix (Finding #2).
+ */
+function rejectedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
+  return (
+    diffHash !== undefined &&
+    journal.attempts.some((a) => a.diffHash === diffHash && a.outcome === "red")
+  );
+}
+
 /** Build a `MoveLane`, omitting `expect`/`note` when absent (exactOptionalPropertyTypes). */
 function moveLane(
   card: Card,
@@ -286,10 +301,11 @@ function decideReview(
   if (!review) return NOOP; // grader still running / no verdict yet — human/grader gate
 
   if (review.verdict === "changes_requested") {
-    // Only act on a FRESH rejection (the head that passed checks is the last, green
-    // attempt). Once the shell folds the rejection as a red attempt the last outcome
-    // flips and this stops re-firing on a sticky review.json (Finding #2).
-    if (lastAttempt(journal)?.outcome !== "green") return NOOP;
+    // Edge-detect by diffHash (PLAN §6 row 354, Finding #2): a rejection is "acted
+    // on" once the shell has folded it as a red AttemptRecord for this head, so a
+    // sticky review.json doesn't re-send. A head that only passed checks has just a
+    // green attempt → not yet rejected → route the findings back.
+    if (rejectedDiff(journal, obs.diffHash)) return NOOP;
     const verdict = shouldGiveUp(journal, policy, obs, now);
     if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
     // Move active→active (dev-3.0 does NOT respawn) and route findings to the
@@ -300,16 +316,14 @@ function decideReview(
 
   // verdict === "pass".
   if (key === "review-by-ai") {
-    if (policy.merge === "open_pr") {
-      // run → open PR → stop; park it in the "PR Review" lane for the human.
-      return [{ kind: "OpenPr", card }, moveLane(card, "review-by-colleague", "review-by-ai")];
-    }
     // Hand to the human gate (or let dev-3.0's on-exit hook do the same move).
+    // Merge-policy dispatch happens later, at the gate (see mergeGateAction).
     return [moveLane(card, "review-by-user", "review-by-ai")];
   }
 
   // review-by-user, pass: the human gate holds until they signal merge (by moving
-  // the card to the ready_to_merge column — handled by the custom-column route).
+  // the card to the ready_to_merge column / merge label — handled by the
+  // custom-column route + mergeGateAction).
   return NOOP;
 }
 
