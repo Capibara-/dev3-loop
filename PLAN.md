@@ -107,6 +107,13 @@ loop forever:
 // by the shell and read back by the NEXT tick's decide(). Fleet slot availability is
 // the promotion budget `slots`, consumed sequentially as promotions are emitted (§7),
 // not a per-card obs field.
+//
+// MILESTONE NOTE: this gate is a SEAM, not all of "fleet". M1 wires the loop above
+// with a TRIVIAL `promotionBudget` (a plain concurrency count, or a stubbed allow-all
+// like T7's guardrail predicate) so the structure — pre-pass, sequential consumption,
+// the `slots<=0` skip — is exercised against fakes. The real fleet (full caps + daily
+// spend ceiling + circuit breaker, §7) lands in M3. So §15's "fleet → M3" and this
+// inline gate are not in conflict: M1 owns the gate's SHAPE, M3 owns its POLICY.
 ```
 
 `decide()` is pure and exhaustively unit-tested. `execute()` is the only thing that performs I/O.
@@ -617,9 +624,9 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 ## 15. Build order / milestones (each must be green before the next)
 
 - **M0 — scaffold.** Bun project, strict tsconfig, vitest, `tsc --noEmit`, CI, empty module tree, `cli.ts` with `--help`. Test: trivial smoke.
-- **M1 — pure core + fakes.** Domain types, `decide()`, Fake ports, composition root running a tick against fakes. Tests 1–4, 7, 8. **No real I/O anywhere.**
+- **M1 — pure core + fakes.** Domain types, `decide()`, Fake ports, composition root running a tick against fakes. The tick includes the fleet promotion gate as a **seam** — a trivial/stubbed `promotionBudget` (the §3 MILESTONE NOTE) so the gate's *shape* is exercised; its *policy* (caps/breaker) is M3. Tests 1–4, 7, 8. **No real I/O anywhere.**
 - **M2 — persistence + recovery.** FsJournal (atomic), NdjsonEventLog, write-ahead, replay. Tests 9–11.
-- **M3 — guardrails + fleet.** All predicates + caps + breaker. Tests 5, 6.
+- **M3 — guardrails + fleet.** All predicates + caps + breaker — fills in the M1 promotion-gate seam with real fleet *policy* (concurrency cap, daily-spend ceiling, circuit breaker, §7). Tests 5, 6.
 - **M4 — real adapters behind ports.** `GitCli`, `TmuxRuntime`, `Dev3JsonReader`, `Dev3CliBoard`. Mark CLI/store assumptions `// DISCOVERY`. Tests 12–14.
 - **M5 — grader stage.** Separate-model launch, review.json, findings routing. Extend unit tests.
 - **M6 — merge-policy execution.** OpenPr/Merge, merge-before-teardown ordering, exactly-once. Recovery test 9 against real git.
