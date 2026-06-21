@@ -42,11 +42,13 @@
  */
 
 import {
-  allowAll,
   applyHumanResume,
   decide,
+  routingKey,
   type GiveUpPredicate,
 } from "../domain/reconcile.ts";
+import { guardrails } from "../domain/guardrails.ts";
+import { evaluateFleet, liveCount, type FleetDecision, type FleetOptions } from "../domain/fleet.ts";
 import { recover } from "./recover.ts";
 import type {
   Action,
@@ -95,22 +97,10 @@ export type PromotionBudget = (
   journals: Readonly<Record<string, CardJournal>>,
 ) => number;
 
-/**
- * The trivial budget: `cap − liveCount`, where a card is "live" when it
- * occupies a fleet slot (not `todo`, not an observe-only terminal, not journaled
- * terminal). This exercises the gate's *shape* (pre-pass, sequential consumption,
- * the `slots <= 0` skip); the real fleet *policy* lands later.
- */
+/** Concurrency-only budget (`cap − live`); a `promotionBudget` override / seam. The
+ *  full policy (+ spend ceiling + breaker) is {@link evaluateFleet}, the loop default. */
 export function concurrencyBudget(cap: number): PromotionBudget {
-  return (cards, journals) => {
-    let live = 0;
-    for (const card of cards) {
-      if (journals[card.id]?.terminal !== undefined) continue;
-      const key = routingKey(card);
-      if (key !== "todo" && key !== "completed" && key !== "cancelled") live += 1;
-    }
-    return Math.max(0, cap - live);
-  };
+  return (cards, journals) => Math.max(0, cap - liveCount(cards, journals));
 }
 
 // --- the loop -------------------------------------------------------------
@@ -125,16 +115,31 @@ export interface PlannedAction {
   gated?: boolean;
 }
 
+/** Defaults for the fleet policy knobs, applied when {@link LoopConfig} omits them. */
+export const FLEET_DEFAULTS = {
+  dailySpendCeiling: Number.POSITIVE_INFINITY,
+  breakerWindow: 10,
+  breakerThreshold: 0.5,
+  breakerMinSamples: 4,
+  spendWindowMs: 86_400_000, // 24h
+} as const;
+
 /** Knobs for {@link createLoop}. */
 export interface LoopConfig {
-  /** Fleet live-card cap, used by the default {@link concurrencyBudget} seam. */
+  /** Fleet live-card concurrency cap. */
   concurrencyCap: number;
   /** When true, compute the plan but perform ZERO port mutations. */
   dryRun?: boolean;
-  /** Override the fleet budget seam (defaults to {@link concurrencyBudget}). */
+  /** Concurrency-only budget override; bypasses the full {@link evaluateFleet} policy. */
   promotionBudget?: PromotionBudget;
-  /** Guardrail give-up predicate; defaults to {@link allowAll} (real caps land later). */
+  /** Guardrail give-up predicate; defaults to the real {@link guardrails}. */
   shouldGiveUp?: GiveUpPredicate;
+  // Fleet-policy overrides; each falls back to FLEET_DEFAULTS.
+  dailySpendCeiling?: number;
+  breakerWindow?: number;
+  breakerThreshold?: number;
+  breakerMinSamples?: number;
+  spendWindowMs?: number;
 }
 
 /** The reconciler: one {@link Loop.tick} = one full level-triggered reconcile. */
@@ -154,8 +159,19 @@ const EMPTY_OBS: Observation = { result: null, review: null, alive: false, merge
  */
 export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
   const dryRun = config.dryRun ?? false;
-  const budget = config.promotionBudget ?? concurrencyBudget(config.concurrencyCap);
-  const shouldGiveUp = config.shouldGiveUp ?? allowAll;
+  const shouldGiveUp = config.shouldGiveUp ?? guardrails;
+  const overrideBudget = config.promotionBudget;
+  const fleetOpts: FleetOptions = {
+    cap: config.concurrencyCap,
+    dailySpendCeiling: config.dailySpendCeiling ?? FLEET_DEFAULTS.dailySpendCeiling,
+    breakerWindow: config.breakerWindow ?? FLEET_DEFAULTS.breakerWindow,
+    breakerThreshold: config.breakerThreshold ?? FLEET_DEFAULTS.breakerThreshold,
+    breakerMinSamples: config.breakerMinSamples ?? FLEET_DEFAULTS.breakerMinSamples,
+    spendWindowMs: config.spendWindowMs ?? FLEET_DEFAULTS.spendWindowMs,
+  };
+  // Rising-edge debounce for breaker_open. Not essential state: a lost flag costs
+  // one extra audit line, never correctness (budget is recomputed every tick).
+  let breakerWasOpen = false;
 
   /** Gather the cheap, side-effect-free {@link Observation} for a card. */
   async function observe(card: Card): Promise<Observation> {
@@ -244,8 +260,18 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
     const cards = await ports.board.listCards();
     const journals = await ports.journal.loadAll();
 
-    // PRE-PASS: the fleet gate, computed ONCE and consumed sequentially.
-    let slots = budget(cards, journals);
+    // Fleet gate: computed ONCE per tick, consumed sequentially. An override is a
+    // concurrency-only counter; otherwise the full evaluateFleet policy applies.
+    const decision: FleetDecision = overrideBudget
+      ? { budget: overrideBudget(cards, journals), breakerOpen: false }
+      : evaluateFleet(cards, journals, fleetOpts, now);
+    let slots = decision.budget;
+
+    if (decision.breakerOpen && !breakerWasOpen && !dryRun) {
+      await ports.eventLog.append(breakerEvent(now, decision)); // rising edge only
+    }
+    breakerWasOpen = decision.breakerOpen;
+
     const planned: PlannedAction[] = [];
 
     for (const card of cards) {
@@ -398,11 +424,6 @@ export async function startReconciler(
 
 // --- pure helpers ---------------------------------------------------------
 
-/** Routing key = the card's custom column if set, else its built-in lane. */
-function routingKey(card: Card): Lane | CustomColumnId {
-  return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
-}
-
 /**
  * Lane-gating: only cards being actively worked need the full cheap-read
  * snapshot. `todo` / observe-only terminal / journaled-terminal cards route off
@@ -465,6 +486,18 @@ function mkEvent(
   const event: LoopEvent = { ts, cardId, type, action, actionId };
   if (detail !== undefined) event.detail = detail;
   return event;
+}
+
+/** Sentinel cardId for fleet-wide events (LoopEvent.cardId is required). */
+const FLEET_CARD_ID = "*fleet*";
+
+function breakerEvent(now: number, decision: FleetDecision): LoopEvent {
+  return {
+    ts: now,
+    cardId: FLEET_CARD_ID,
+    type: "breaker_open",
+    detail: { failRate: decision.failRate, windowSize: decision.windowSize },
+  };
 }
 
 /**

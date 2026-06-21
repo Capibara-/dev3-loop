@@ -27,7 +27,7 @@ import {
   FakeRuntime,
   FixedClock,
 } from "../../src/adapters/fake/index.ts";
-import type { Card, CardJournal, CardPolicy } from "../../src/domain/types.ts";
+import type { AttemptRecord, Card, CardJournal, CardPolicy } from "../../src/domain/types.ts";
 
 // --- builders -------------------------------------------------------------
 
@@ -284,6 +284,82 @@ describe("shell fold contract", () => {
     expect(j.attempts[0]!.outcome).toBe("red");
     expect(j.attempts[0]!.failureSignature).toBeDefined();
     expect(j.consecutiveFailures).toBe(1);
+  });
+});
+
+// --- real guardrails wired into the loop ----------------------------------
+
+describe("guardrails end-to-end (real predicate is the loop default)", () => {
+  test("a card at the consecutive-failure cap gives up → user-questions + note", async () => {
+    const card = mkCard({ lane: "in-progress" });
+    const red = (n: number): AttemptRecord => ({
+      n,
+      outcome: "red",
+      startedAt: 0,
+      diffHash: `d${n}`, // distinct ⇒ no oscillation; cap is the reason
+    });
+    const seed: CardJournal = {
+      cardId: "card-1",
+      attempts: [red(1), red(2), red(3)],
+      consecutiveFailures: 3, // == maxConsecutiveFailures (default 3)
+      totalTokens: 0,
+      pending: {},
+    };
+    const h = harness([card], { journals: [seed] });
+    const board = h.board as FakeBoard;
+    const journal = h.journal as FakeJournal;
+    const events = h.eventLog as FakeEventLog;
+
+    await h.loop.tick();
+
+    expect(board.cards[0]!.lane).toBe("user-questions");
+    expect(board.notes.map((n) => n.id)).toEqual(["card-1"]);
+    expect(board.notes[0]!.note).toContain("consecutive-failures");
+    const j = (await journal.loadAll())["card-1"]!;
+    expect(j.terminal).toBe("given_up");
+    // The GiveUp is in the audit trace.
+    expect(events.events.some((e) => e.action === "GiveUp")).toBe(true);
+  });
+});
+
+// --- circuit breaker gates promotions -------------------------------------
+
+describe("circuit breaker end-to-end", () => {
+  test("an open breaker blocks promotion and emits breaker_open once (rising edge)", async () => {
+    // Two todo cards; a history journal (not on the board) carries 3-of-4
+    // non-green attempts ⇒ breaker open (≥ floor of 4, > 50%).
+    const a = mkCard({ id: "card-a", branch: "dev3/task-a" });
+    const b = mkCard({ id: "card-b", branch: "dev3/task-b" });
+    const hist: CardJournal = {
+      cardId: "hist",
+      attempts: [
+        { n: 1, outcome: "red", startedAt: 1 },
+        { n: 2, outcome: "red", startedAt: 2 },
+        { n: 3, outcome: "red", startedAt: 3 },
+        { n: 4, outcome: "green", startedAt: 4 },
+      ],
+      consecutiveFailures: 0,
+      totalTokens: 0,
+      pending: {},
+    };
+    const h = harness([a, b], { journals: [hist] });
+    const board = h.board as FakeBoard;
+    const runtime = h.runtime as FakeRuntime;
+    const events = h.eventLog as FakeEventLog;
+
+    await h.loop.tick();
+
+    // No promotions while the breaker is open.
+    expect(board.cards.every((c) => c.lane === "todo")).toBe(true);
+    expect(board.moves).toEqual([]);
+    expect(runtime.producerLaunches).toEqual([]);
+    const breakerEvents = events.events.filter((e) => e.type === "breaker_open");
+    expect(breakerEvents).toHaveLength(1);
+    expect(breakerEvents[0]!.detail).toMatchObject({ failRate: 0.75, windowSize: 4 });
+
+    // Second tick: breaker still open, but no DUPLICATE event (rising-edge only).
+    await h.loop.tick();
+    expect(events.events.filter((e) => e.type === "breaker_open")).toHaveLength(1);
   });
 });
 

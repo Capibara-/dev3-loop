@@ -621,7 +621,7 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 - **docs/POLICY.md** — `CRABBOX.md`/policy file format, every knob, defaults, examples.
 - **docs/OPERATIONS.md** — running, `preflight`, `replay`, reading the event log, what each guardrail trip looks like on the board, recovery after a crash.
 - **AGENTS.md** — conventions for agents editing this repo (mirrors dev-3.0's own AGENTS.md ethos): pure-domain rule, no I/O in `domain/`, test-first, atomic writes.
-- TSDoc on every port method and every `Action` variant.
+- **Comment sparingly, mirroring dev-3.0's own style** (~9% comment lines, not per-symbol JSDoc): a short `//` header on a module only where its purpose isn't obvious, terse inline trailing comments for type-field formats/examples, section dividers, and comments reserved for the non-obvious *why* (invariants, gotchas, exactly-once/write-ahead rationale) — never narration that restates the code.
 
 ---
 
@@ -718,9 +718,9 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
 **M1 — pure domain core + fakes** (no real I/O anywhere)
 - **T4 Domain types.** `src/domain/types.ts`: `Lane`, `CustomColumnId`,
   `MergePolicy`, `AgentSpec`, `CardPolicy`, `Card`, `AttemptRecord`,
-  `CardJournal`, `Action` (TSDoc each variant). Gate: tsc + type-level test. (dep: T1)
+  `CardJournal`, `Action`. Gate: tsc + type-level test. (dep: T1)
 - **T5 Ports + DTOs.** `src/ports/*.ts` + `dto.ts`: all 7 ports, `CheckResult`/
-  `MergeResult`/`PrResult`/`ImplementorResult`/`Review`/`LoopEvent`. TSDoc.
+  `MergeResult`/`PrResult`/`ImplementorResult`/`Review`/`LoopEvent`.
   No impls. (dep: T4)
 - **T6 Fake adapters.** in-memory `FakeBoard`/`FakeRuntime`/`FakeGit`/
   `FakeJournal`/`FakeEventLog`/`FixedClock`/`FakeConfig` for tests. (dep: T5)
