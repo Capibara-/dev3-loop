@@ -107,6 +107,13 @@ loop forever:
 // by the shell and read back by the NEXT tick's decide(). Fleet slot availability is
 // the promotion budget `slots`, consumed sequentially as promotions are emitted (§7),
 // not a per-card obs field.
+//
+// MILESTONE NOTE: this gate is a SEAM, not all of "fleet". M1 wires the loop above
+// with a TRIVIAL `promotionBudget` (a plain concurrency count, or a stubbed allow-all
+// like T7's guardrail predicate) so the structure — pre-pass, sequential consumption,
+// the `slots<=0` skip — is exercised against fakes. The real fleet (full caps + daily
+// spend ceiling + circuit breaker, §7) lands in M3. So §15's "fleet → M3" and this
+// inline gate are not in conflict: M1 owns the gate's SHAPE, M3 owns its POLICY.
 ```
 
 `decide()` is pure and exhaustively unit-tested. `execute()` is the only thing that performs I/O.
@@ -617,9 +624,9 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 ## 15. Build order / milestones (each must be green before the next)
 
 - **M0 — scaffold.** Bun project, strict tsconfig, vitest, `tsc --noEmit`, CI, empty module tree, `cli.ts` with `--help`. Test: trivial smoke.
-- **M1 — pure core + fakes.** Domain types, `decide()`, Fake ports, composition root running a tick against fakes. Tests 1–4, 7, 8. **No real I/O anywhere.**
+- **M1 — pure core + fakes.** Domain types, `decide()`, Fake ports, composition root running a tick against fakes. The tick includes the fleet promotion gate as a **seam** — a trivial/stubbed `promotionBudget` (the §3 MILESTONE NOTE) so the gate's *shape* is exercised; its *policy* (caps/breaker) is M3. Tests 1–4, 7, 8. **No real I/O anywhere.**
 - **M2 — persistence + recovery.** FsJournal (atomic), NdjsonEventLog, write-ahead, replay. Tests 9–11.
-- **M3 — guardrails + fleet.** All predicates + caps + breaker. Tests 5, 6.
+- **M3 — guardrails + fleet.** All predicates + caps + breaker — fills in the M1 promotion-gate seam with real fleet *policy* (concurrency cap, daily-spend ceiling, circuit breaker, §7). Tests 5, 6.
 - **M4 — real adapters behind ports.** `GitCli`, `TmuxRuntime`, `Dev3JsonReader`, `Dev3CliBoard`. Mark CLI/store assumptions `// DISCOVERY`. Tests 12–14.
 - **M5 — grader stage.** Separate-model launch, review.json, findings routing. Extend unit tests.
 - **M6 — merge-policy execution.** OpenPr/Merge, merge-before-teardown ordering, exactly-once. Recovery test 9 against real git.
@@ -720,15 +727,28 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   an emitted Action, not a read). Default in-band adapter makes `LaunchProducer`/
   `LaunchGrader` no-ops (the `MoveLane` triggers dev-3.0's spawn). Excludes guardrail
   caps (M3) — stub the predicate as `allow`. (dep: T4,T5)
-- **T8 `decide()` table tests.** table-driven every §6 row; producer self-report
-  ignored (red wins); grader only after green; merge-policy dispatch; human
-  override resets `consecutiveFailures` not `totalAttempts` (tests 1,2,4,7,8). (dep: T6,T7)
+- **T8 `decide()` table tests.** table-driven **every §6 row** → asserted ordered
+  `Action[]` (`[]`=NoOp; order checked for compound rows). Red/green seeded via
+  `journal.attempts`, never `obs`. Producer self-report ignored (red wins); grader
+  only after green; sticky `result.json`/`review.json` + `fixPromptSent` ⇒ NoOp
+  (exactly-once, Finding #2); empty-diff ⇒ `GiveUp`; unmanaged custom column ⇒ `[]`
+  (Finding #6a); merge `expect` guard (Finding #7); merge-policy dispatch; human
+  override resets `consecutiveFailures` **and clears `terminal`** (Finding #6b), not
+  `totalAttempts`. Guardrail-trip GiveUp is M3 (stub predicate=allow). Tests
+  1,2,4,7,8. (dep: T6,T7)
 - **T9 Config boot + validation.** `src/app/config.ts` + `ConfigPort` fake: load
   config + per-repo policy, defaults, **fail-fast on producer==grader** + warn on
   same-model (test 3). (dep: T5)
-- **T10 Composition root + tick loop.** `src/app/loop.ts`: wire ports→fakes,
-  `tick()` = intent→execute→done→persist, level-triggered runner. Test: N ticks
-  drive a fake card `todo → … → review-by-user` against fakes. (dep: T6,T7,T9)
+- **T10 Composition root + tick loop.** `src/app/loop.ts`: wire ports→fakes.
+  `tick()` per amended §3: per-tick `promotionBudget` pre-pass (shell-side fleet
+  gate, Finding #3 — stubbed seam in M1; full caps/breaker are M3) → per card
+  `observe()` (cheap idempotent reads) → `decide()→Action[]` executed **in order**,
+  per-action write-ahead (intent→execute→fold result into journal→done). Shell folds
+  `RunChecks` results (M1 happy path) — and, as the fix-loop is wired, grader
+  verdicts → `AttemptRecord`s, setting `fixPromptSent` on `SendFixPrompt` dispatch
+  (§9). Event log = audit trace; journal = single source of truth (Finding #10).
+  Level-triggered runner; `dry-run` mutates nothing. Test: N ticks drive a fake card
+  `todo → … → review-by-user`. (dep: T6,T7,T9)
 
 Later milestones (M2 persistence/recovery, M3 guardrails/fleet, M4 real adapters,
 M5 grader, M6 merge, M7 docs/dry-run) get their own task cards once M1 is green —
