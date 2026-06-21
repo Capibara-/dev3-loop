@@ -1,7 +1,7 @@
 /**
- * In-memory {@link GitPort} for tests (PLAN §5/§9/§13). Scriptable diff and
+ * In-memory {@link GitPort} for tests. Scriptable diff and
  * checks; {@link FakeGit.merge} flips a per-card "merged" flag exactly once and
- * counts calls, so the exactly-once / write-ahead recovery tests (PLAN §13 #9)
+ * counts calls, so the exactly-once / write-ahead recovery tests
  * can assert a second `merge` is a no-op. No real git.
  *
  * @module adapters/fake/git

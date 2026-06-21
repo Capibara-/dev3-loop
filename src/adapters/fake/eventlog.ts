@@ -1,5 +1,5 @@
 /**
- * In-memory {@link EventLogPort} for tests (PLAN §5/§9). Appends to a public
+ * In-memory {@link EventLogPort} for tests. Appends to a public
  * array so tests can assert the write-ahead intent/done ordering of the
  * replayable spine.
  *

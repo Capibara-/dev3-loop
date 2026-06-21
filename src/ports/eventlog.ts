@@ -1,7 +1,7 @@
 /**
  * The event-log seam: the append-only, replayable spine of the system. Every
  * intent/done pair, lane move, and guardrail trip is recorded here; the journal
- * is a projection rebuildable from it (PLAN §9).
+ * is a projection rebuildable from it.
  *
  * @module ports/eventlog
  */
@@ -16,7 +16,7 @@ export interface EventLogPort {
   /**
    * Append a single event. Must durably persist before the corresponding effect
    * is treated as recorded — `intent` is written **before** an effectful action
-   * runs (write-ahead), `done` **after** it succeeds (PLAN §9).
+   * runs (write-ahead), `done` **after** it succeeds.
    *
    * @param event the event to append.
    */

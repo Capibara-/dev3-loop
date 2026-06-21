@@ -1,17 +1,17 @@
 /**
- * Composition root + reconcile tick loop (T10 — PLAN.md §3, §6, §9).
+ * Composition root + reconcile tick loop.
  *
  * This is the **imperative shell** around the pure {@link decide} core. It wires
- * the seven ports (Fakes in tests, real adapters from M4) into a {@link Loop} and
+ * the seven ports (Fakes in tests, real adapters) into a {@link Loop} and
  * drives the level-triggered reconcile:
  *
  * ```
  * tick():
  *   cards   = board.listCards()
  *   journal = journal.loadAll()
- *   slots   = promotionBudget(cards, journal)   // computed ONCE, consumed sequentially (§7)
+ *   slots   = promotionBudget(cards, journal)   // computed ONCE, consumed sequentially
  *   for card in cards:
- *     obs     = observe(card)                    // cheap, side-effect-free reads (§4)
+ *     obs     = observe(card)                    // cheap, side-effect-free reads
  *     actions = decide(card, journal[card.id], policy, obs, now)   // PURE → ordered Action[]
  *     for a in actions:                          // [] = NoOp
  *       if a is a promotion and slots <= 0: skip the rest of this card (fleet gate)
@@ -21,19 +21,18 @@
  *       journal.persist(journal); eventLog.append(done(a))
  * ```
  *
- * Three load-bearing invariants from PLAN §2/§9:
- *  - **The fleet promotion gate lives HERE, not in `decide()`** (Finding #3): a
+ * Three load-bearing invariants:
+ *  - **The fleet promotion gate lives HERE, not in `decide()`**: a
  *    per-card boolean would race, so the budget is a counter the shell spends
- *    sequentially. M1 ships it as a SEAM with a trivial concurrency budget
- *    ({@link concurrencyBudget}); the full caps/breaker policy is M3 (§3 MILESTONE
- *    NOTE).
+ *    sequentially. It currently ships as a SEAM with a trivial concurrency budget
+ *    ({@link concurrencyBudget}); the full caps/breaker policy lands later.
  *  - **The shell folds every evaluation into an `AttemptRecord`** — both
- *    `RunChecks` results AND grader `changes_requested` verdicts (the latter as a
- *    **red** attempt that feeds `consecutiveFailures` + the §7 breaker), and it
+ *    `RunChecks` results AND reviewer `changes_requested` verdicts (the latter as a
+ *    **red** attempt that feeds `consecutiveFailures` + the breaker), and it
  *    sets `fixPromptSent` whenever it dispatches a `SendFixPrompt`, giving
- *    exactly-once fix delivery (§9).
+ *    exactly-once fix delivery.
  *  - **The journal is the single source of truth**; the event log is an
- *    append-only audit trace, never replayed into state (Finding #10).
+ *    append-only audit trace, never replayed into state.
  *
  * `dry-run` mode computes `observe()`/`decide()` (side-effect-free reads only) and
  * returns the intended {@link PlannedAction}s **without** performing a single port
@@ -70,7 +69,7 @@ import type { CheckResult, Observation } from "../ports/dto.ts";
 
 // --- port bundle ----------------------------------------------------------
 
-/** The seven seams the shell drives. Fakes in tests, real adapters from M4. */
+/** The seven seams the shell drives. Fakes in tests, real adapters in production. */
 export interface LoopPorts {
   board: BoardPort;
   runtime: RuntimePort;
@@ -84,11 +83,11 @@ export interface LoopPorts {
 // --- fleet promotion gate (seam) ------------------------------------------
 
 /**
- * The fleet promotion budget (PLAN §7, Finding #3): how many `todo` cards may be
+ * The fleet promotion budget: how many `todo` cards may be
  * promoted to `in-progress` this tick. Computed ONCE per tick over the full card
  * list and **consumed sequentially** by the shell — never a per-card field (that
- * would race). M1 ships {@link concurrencyBudget}; M3 fills in the daily-spend
- * ceiling + circuit breaker.
+ * would race). It currently ships {@link concurrencyBudget}; the daily-spend
+ * ceiling + circuit breaker land later.
  */
 export type PromotionBudget = (
   cards: readonly Card[],
@@ -96,10 +95,10 @@ export type PromotionBudget = (
 ) => number;
 
 /**
- * The M1 trivial budget: `cap − liveCount`, where a card is "live" when it
+ * The trivial budget: `cap − liveCount`, where a card is "live" when it
  * occupies a fleet slot (not `todo`, not an observe-only terminal, not journaled
  * terminal). This exercises the gate's *shape* (pre-pass, sequential consumption,
- * the `slots <= 0` skip); the real fleet *policy* is M3 (§3 MILESTONE NOTE).
+ * the `slots <= 0` skip); the real fleet *policy* lands later.
  */
 export function concurrencyBudget(cap: number): PromotionBudget {
   return (cards, journals) => {
@@ -129,11 +128,11 @@ export interface PlannedAction {
 export interface LoopConfig {
   /** Fleet live-card cap, used by the default {@link concurrencyBudget} seam. */
   concurrencyCap: number;
-  /** When true, compute the plan but perform ZERO port mutations (PLAN §15 M7 mode). */
+  /** When true, compute the plan but perform ZERO port mutations. */
   dryRun?: boolean;
   /** Override the fleet budget seam (defaults to {@link concurrencyBudget}). */
   promotionBudget?: PromotionBudget;
-  /** Guardrail give-up predicate; defaults to {@link allowAll} (real caps are M3). */
+  /** Guardrail give-up predicate; defaults to {@link allowAll} (real caps land later). */
   shouldGiveUp?: GiveUpPredicate;
 }
 
@@ -150,14 +149,14 @@ const EMPTY_OBS: Observation = { result: null, review: null, alive: false, merge
  * Construct the reconcile loop from injected ports. This is the **composition
  * root** — the only place the shell knows the concrete ports; everything below is
  * driven through the port interfaces, so the same loop runs against Fakes (tests)
- * or real adapters (M4) with no change.
+ * or real adapters with no change.
  */
 export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
   const dryRun = config.dryRun ?? false;
   const budget = config.promotionBudget ?? concurrencyBudget(config.concurrencyCap);
   const shouldGiveUp = config.shouldGiveUp ?? allowAll;
 
-  /** Gather the cheap, side-effect-free {@link Observation} for a card (PLAN §4). */
+  /** Gather the cheap, side-effect-free {@link Observation} for a card. */
   async function observe(card: Card): Promise<Observation> {
     const [result, review, alive, merged, diff] = await Promise.all([
       ports.runtime.readResult(card),
@@ -167,7 +166,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
       ports.git.diff(card),
     ]);
     const obs: Observation = { result, review, alive, merged };
-    // Absent diffHash ⇒ empty diff (the "done but changed nothing" signal, §4/§10).
+    // Absent diffHash ⇒ empty diff (the "done but changed nothing" signal).
     if (diff.length > 0) obs.diffHash = hashString(diff);
     return obs;
   }
@@ -190,16 +189,16 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
 
       case "LaunchProducer":
         // Default in-band adapter no-ops (the MoveLane triggered dev-3.0's spawn);
-        // out-of-band adapters carry the real launch (PLAN §4 Action docs).
-        await ports.runtime.launchProducer(card, policy.producer, card.prompt);
+        // out-of-band adapters carry the real launch.
+        await ports.runtime.launchProducer(card, policy.implementor, card.prompt);
         return journal;
 
       case "LaunchGrader":
-        await ports.runtime.launchGrader(card, policy.grader, graderPrompt(card));
+        await ports.runtime.launchGrader(card, policy.reviewer, graderPrompt(card));
         return journal;
 
       case "RunChecks": {
-        // The source of truth for green/red — never the producer's self-report (§2 #8).
+        // The source of truth for green/red — never the implementor's self-report.
         const result = await ports.git.runChecks(card, policy.checksCmd);
         return foldCheck(journal, result, obs, now);
       }
@@ -214,7 +213,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
         return journal;
 
       case "Merge": {
-        // Idempotent + exactly-once: the adapter no-ops if already merged (§9).
+        // Idempotent + exactly-once: the adapter no-ops if already merged.
         const result = await ports.git.merge(card);
         return result.merged ? { ...journal, terminal: "merged" } : journal;
       }
@@ -225,7 +224,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
 
       case "GiveUp":
         // Abandon to the human: move to user-questions + a diagnostic note, leave
-        // the worktree intact (PLAN §7).
+        // the worktree intact.
         await ports.board.moveCard(card.id, "user-questions");
         await ports.board.addNote(card.id, giveUpNote(action.reason, journal));
         return { ...journal, terminal: "given_up" };
@@ -240,7 +239,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
     const cards = await ports.board.listCards();
     const journals = await ports.journal.loadAll();
 
-    // PRE-PASS: the fleet gate, computed ONCE and consumed sequentially (§7, #3).
+    // PRE-PASS: the fleet gate, computed ONCE and consumed sequentially.
     let slots = budget(cards, journals);
     const planned: PlannedAction[] = [];
 
@@ -249,7 +248,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
       let journal = journals[card.id] ?? freshJournal(card.id);
       const key = routingKey(card);
 
-      // Human edits are authoritative inputs (level-triggered, §6 / Finding #6b):
+      // Human edits are authoritative inputs (level-triggered):
       // a card the human dragged from user-questions back to in-progress is a
       // deliberate revive — reset consecutiveFailures and clear `terminal` so it is
       // no longer flagged `given_up`. Preserves the absolute attempt history.
@@ -268,7 +267,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
         const promotion = isPromotion(action);
         if (promotion && slots <= 0) {
           // Fleet gate: hold this promotion (and its bound LaunchProducer) this
-          // tick; the card stays in `todo` and is re-derived next tick (§7).
+          // tick; the card stays in `todo` and is re-derived next tick.
           if (dryRun) planned.push({ cardId: card.id, action, gated: true });
           break;
         }
@@ -282,7 +281,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
           continue;
         }
 
-        // Per-action write-ahead: intent → execute+fold → persist → done (§3).
+        // Per-action write-ahead: intent → execute+fold → persist → done.
         const actionId = `${card.id}:${action.kind}:${now}:${actionIndex}`;
         actionIndex += 1;
         await ports.eventLog.append({
@@ -328,7 +327,7 @@ export interface RunnerOptions {
 }
 
 /**
- * Drive {@link Loop.tick} on an interval (PLAN §3). Level-triggered: every tick is
+ * Drive {@link Loop.tick} on an interval. Level-triggered: every tick is
  * a full reconcile that re-derives all actions from durable state, so a missed
  * wake-up never causes divergence. The clock/sleep are injected so this is fully
  * testable without real timers. Returns the number of ticks executed.
@@ -352,7 +351,7 @@ export async function runLoop(loop: Loop, opts: RunnerOptions): Promise<number> 
 
 /**
  * The named composition entrypoint the CLI's `run`/`dry-run` will call once the
- * real adapters land (M4): build the loop from injected ports and drive it on an
+ * real adapters land: build the loop from injected ports and drive it on an
  * interval, logging the intended actions each tick in dry-run. Kept here (not in
  * `cli.ts`) so the wiring is one swap-in away from real I/O.
  */
@@ -384,13 +383,13 @@ export async function startReconciler(
 
 // --- pure helpers ---------------------------------------------------------
 
-/** Routing key = the card's custom column if set, else its built-in lane (§6). */
+/** Routing key = the card's custom column if set, else its built-in lane. */
 function routingKey(card: Card): Lane | CustomColumnId {
   return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
 }
 
 /**
- * Lane-gating (PLAN §4): only cards being actively worked need the full cheap-read
+ * Lane-gating: only cards being actively worked need the full cheap-read
  * snapshot. `todo` / observe-only terminal / journaled-terminal cards route off
  * the key alone, so we skip the reads (and never blind-probe tmux).
  */
@@ -402,7 +401,7 @@ function needsObservation(key: Lane | CustomColumnId, journal: CardJournal): boo
 /**
  * A promotion = the `MoveLane → in-progress` emitted for a `todo` card (its
  * `expect` is `todo`). This is the only move the fleet gate counts; an
- * active→active re-entry (grader bounce, `expect` = a review lane) is not.
+ * active→active re-entry (reviewer bounce, `expect` = a review lane) is not.
  */
 function isPromotion(action: Action): boolean {
   return action.kind === "MoveLane" && action.to === "in-progress" && action.expect === "todo";
@@ -414,9 +413,9 @@ function freshJournal(cardId: string): CardJournal {
 }
 
 /**
- * Fold a `RunChecks` {@link CheckResult} into a new {@link AttemptRecord} (§9, M1
- * happy path). Green resets `consecutiveFailures`; red increments it (feeding the
- * §7 caps the next tick reads back). The diff hash is recorded for edge-detection
+ * Fold a `RunChecks` {@link CheckResult} into a new {@link AttemptRecord} (happy
+ * path). Green resets `consecutiveFailures`; red increments it (feeding the
+ * caps the next tick reads back). The diff hash is recorded for edge-detection
  * + oscillation; the failure signature (best-effort) for no-progress detection.
  */
 function foldCheck(
@@ -443,12 +442,12 @@ function foldCheck(
 }
 
 /**
- * Fold a `SendFixPrompt` dispatch (§9). Two shapes, distinguished by the journal:
+ * Fold a `SendFixPrompt` dispatch. Two shapes, distinguished by the journal:
  *  - **mechanical-red path** — the red attempt already exists (a prior `RunChecks`
  *    folded it); we just set `fixPromptSent` on it (exactly-once delivery).
- *  - **grader-rejection bounce** — the head's last attempt is *green* (it passed
+ *  - **reviewer-rejection bounce** — the head's last attempt is *green* (it passed
  *    checks), so a `changes_requested` verdict is a NEW failure: fold a fresh
- *    **red** attempt (it feeds `consecutiveFailures` + the §7 breaker) with
+ *    **red** attempt (it feeds `consecutiveFailures` + the breaker) with
  *    `fixPromptSent` already set.
  */
 function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): CardJournal {
@@ -476,12 +475,12 @@ function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): Car
   };
 }
 
-/** The grader's launch input (M1 placeholder; the adversarial rubric lands in M5). */
+/** The reviewer's launch input (placeholder; the adversarial rubric lands later). */
 function graderPrompt(card: Card): string {
   return card.acceptanceCriteria.length > 0 ? card.acceptanceCriteria.join("\n") : card.prompt;
 }
 
-/** Human-facing diagnostic attached to the board on give-up (PLAN §7). */
+/** Human-facing diagnostic attached to the board on give-up. */
 function giveUpNote(reason: string, journal: CardJournal): string {
   return (
     `dev3-loop gave up: ${reason} ` +
@@ -503,7 +502,7 @@ function describeAction(action: Action): string {
 
 /**
  * Stable 32-bit FNV-1a hash, hex. Used for the diff hash (edge-detection +
- * oscillation, §4/§10) and the failure signature. Deterministic and dependency-free.
+ * oscillation) and the failure signature. Deterministic and dependency-free.
  */
 function hashString(s: string): string {
   let h = 0x811c9dc5;

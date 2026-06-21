@@ -1,5 +1,5 @@
 /**
- * Settable {@link ClockPort} for tests (PLAN §5/§13). The pure domain reads time
+ * Settable {@link ClockPort} for tests. The pure domain reads time
  * only through this seam, so stall/heartbeat/timestamp logic is deterministic.
  *
  * @module adapters/fake/clock

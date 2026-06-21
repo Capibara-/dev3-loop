@@ -1,5 +1,5 @@
 /**
- * Compile-only type test for the domain model (PLAN §4 / acceptance).
+ * Compile-only type test for the domain model.
  *
  * Its real job is to fail `tsc --noEmit` if the {@link Action} union,
  * {@link Lane}, or the core interfaces drift from the spec (the exhaustive
@@ -35,11 +35,11 @@ function describeAction(action: Action): string {
     case "NoOp":
       return "noop";
     case "LaunchProducer":
-      return `launch-producer:${action.card.id}`;
+      return `launch-implementor:${action.card.id}`;
     case "RunChecks":
       return `run-checks:${action.card.id}`;
     case "LaunchGrader":
-      return `launch-grader:${action.card.id}`;
+      return `launch-reviewer:${action.card.id}`;
     case "SendFixPrompt":
       return `send-fix:${action.card.id}:${action.findings.length}`;
     case "MoveLane":
@@ -108,8 +108,8 @@ const policy: CardPolicy = {
   maxTotalAttempts: 6,
   stallMs: 600_000,
   tokenBudget: 1_000_000,
-  producer: spec,
-  grader: { agent: "gemini", config: "gemini-default" },
+  implementor: spec,
+  reviewer: { agent: "gemini", config: "gemini-default" },
   checksCmd: "bun run test && tsc --noEmit",
 };
 const card: Card = {

@@ -1,5 +1,5 @@
 /**
- * In-memory {@link RuntimePort} for tests (PLAN §5/§8/§13). Scriptable per-card
+ * In-memory {@link RuntimePort} for tests. Scriptable per-card
  * `result.json`/`review.json`, liveness, and pane captures; records every launch
  * and fix-prompt so tests can assert what the reconciler drove — with no tmux,
  * worktree, or real agent.
@@ -8,7 +8,7 @@
  */
 
 import type { AgentSpec, Card } from "../../domain/types.ts";
-import type { GraderReview, ProducerResult } from "../../ports/dto.ts";
+import type { Review, ImplementorResult } from "../../ports/dto.ts";
 import type { RuntimePort } from "../../ports/runtime.ts";
 
 /** A recorded launch / fix-prompt call. */
@@ -31,18 +31,18 @@ export class FakeRuntime implements RuntimePort {
   /** Every `sendFixPrompt` call, in order. */
   readonly fixPrompts: RuntimeCall[] = [];
 
-  private results = new Map<string, ProducerResult>();
-  private reviews = new Map<string, GraderReview>();
+  private results = new Map<string, ImplementorResult>();
+  private reviews = new Map<string, Review>();
   private alive = new Map<string, boolean>();
   private captures = new Map<string, string>();
 
-  /** Script the producer's `result.json` for a card. */
-  setResult(cardId: string, result: ProducerResult): void {
+  /** Script the implementor's `result.json` for a card. */
+  setResult(cardId: string, result: ImplementorResult): void {
     this.results.set(cardId, result);
   }
 
-  /** Script the grader's `review.json` for a card. */
-  setReview(cardId: string, review: GraderReview): void {
+  /** Script the reviewer's `review.json` for a card. */
+  setReview(cardId: string, review: Review): void {
     this.reviews.set(cardId, review);
   }
 
@@ -80,11 +80,11 @@ export class FakeRuntime implements RuntimePort {
     return Promise.resolve(this.alive.get(card.id) ?? false);
   }
 
-  readResult(card: Card): Promise<ProducerResult | null> {
+  readResult(card: Card): Promise<ImplementorResult | null> {
     return Promise.resolve(this.results.get(card.id) ?? null);
   }
 
-  readReview(card: Card): Promise<GraderReview | null> {
+  readReview(card: Card): Promise<Review | null> {
     return Promise.resolve(this.reviews.get(card.id) ?? null);
   }
 }

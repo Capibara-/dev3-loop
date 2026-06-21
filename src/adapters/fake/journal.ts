@@ -1,5 +1,5 @@
 /**
- * In-memory {@link JournalPort} for tests (PLAN §5/§9). Backed by a `Map`;
+ * In-memory {@link JournalPort} for tests. Backed by a `Map`;
  * clones on persist and load so a stored journal cannot be mutated through a
  * reference the test still holds (mirrors the real adapter's tmp+rename write).
  *

@@ -1,11 +1,11 @@
 /**
- * In-memory {@link BoardPort} for tests (PLAN §5/§13). Holds the cards in RAM and
+ * In-memory {@link BoardPort} for tests. Holds the cards in RAM and
  * **records** every mutation so unit tests can assert the reconciler's intent
  * without a running dev-3.0 or any real I/O.
  *
  * The `moveCard` `expect` guard mirrors dev-3.0's server-enforced compare-and-set
  * (`--if-status`): when `expect` is given and the card is no longer in that lane
- * the move is a **no-op, not an error** (PLAN §6, DISCOVERY §Q2-bis).
+ * the move is a **no-op, not an error**.
  *
  * @module adapters/fake/board
  */

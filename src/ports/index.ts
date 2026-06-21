@@ -1,5 +1,5 @@
 /**
- * Barrel for the dev3-loop ports & DTOs (PLAN §5).
+ * Barrel for the dev3-loop ports & DTOs.
  *
  * Ports import **only** domain types and these DTOs — never an adapter. The
  * domain core depends on these interfaces; adapters implement them.
@@ -19,9 +19,9 @@ export type {
   CheckResult,
   MergeResult,
   PrResult,
-  ProducerResult,
-  GraderCriterion,
-  GraderReview,
+  ImplementorResult,
+  ReviewCriterion,
+  Review,
   LoopEvent,
   LoopEventType,
   Observation,

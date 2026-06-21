@@ -1,5 +1,5 @@
 /**
- * Config boot + validation tests (T9 — PLAN §11).
+ * Config boot + validation tests.
  *
  * All pure: no real config file is read. `FileConfig.fromObject` parses an
  * in-memory object so schema validation/defaulting and repo/card policy
@@ -23,8 +23,8 @@ function rawConfig(over: Record<string, unknown> = {}): Record<string, unknown> 
     stateDir: "/var/dev3-loop",
     defaultPolicy: {
       merge: "merge_when_green",
-      producer: { agent: "builtin-claude", config: "claude-default-opus48" },
-      grader: { agent: "builtin-gemini", config: "gemini-default" },
+      implementor: { agent: "builtin-claude", config: "claude-default-opus48" },
+      reviewer: { agent: "builtin-gemini", config: "gemini-default" },
       checksCmd: "bun run test && tsc --noEmit",
     },
     ...over,
@@ -47,8 +47,8 @@ function mkCard(over: Partial<Card> = {}): Card {
       maxConsecutiveFailures: 3,
       maxTotalAttempts: 6,
       stallMs: 600_000,
-      producer: { agent: "builtin-claude" },
-      grader: { agent: "builtin-gemini" },
+      implementor: { agent: "builtin-claude" },
+      reviewer: { agent: "builtin-gemini" },
       checksCmd: "x",
     },
     ...over,
@@ -81,8 +81,8 @@ test("policy caps default when omitted, explicit values win", () => {
         maxConsecutiveFailures: 5,
         stallMs: 1_000,
         tokenBudget: 250_000,
-        producer: { agent: "builtin-claude" },
-        grader: { agent: "builtin-gemini" },
+        implementor: { agent: "builtin-claude" },
+        reviewer: { agent: "builtin-gemini" },
         checksCmd: "tsc --noEmit",
       },
     }),

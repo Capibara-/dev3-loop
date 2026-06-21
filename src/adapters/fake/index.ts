@@ -1,6 +1,6 @@
 /**
- * Barrel for the in-memory `Fake*` adapters (PLAN §5/§13). These are the **only**
- * way the pure core is exercised in M1 — no tmux, git, dev-3.0, or fs I/O.
+ * Barrel for the in-memory `Fake*` adapters. These are the **only**
+ * way the pure core is exercised — no tmux, git, dev-3.0, or fs I/O.
  *
  * @module adapters/fake
  */

@@ -1,23 +1,23 @@
 /**
- * The reconcile state machine — `decide()` (PLAN §6).
+ * The reconcile state machine — `decide()`.
  *
  * PURE module: no I/O, no adapter imports. Given the durable journal, the resolved
  * policy, and a cheap {@link Observation} snapshot, it returns the **ordered**
- * {@link Action} list the imperative shell should execute this tick (`[]` = NoOp;
- * Finding #4). Every decision is re-derivable from durable state, so the loop is
+ * {@link Action} list the imperative shell should execute this tick (`[]` = NoOp).
+ * Every decision is re-derivable from durable state, so the loop is
  * level-triggered and crash-safe.
  *
- * Two pillars from PLAN §2 are encoded here:
- *  - **The producer's self-report is never trusted.** A present `.dev3/result.json`
+ * Two pillars are encoded here:
+ *  - **The implementor's self-report is never trusted.** A present `.dev3/result.json`
  *    with `status:"done"` triggers a `RunChecks` we run ourselves; `claimedTestsPass`
  *    is ignored. The green/red verdict comes from `journal.attempts` (the journaled
  *    result of a prior `RunChecks`), **never** from `obs`.
- *  - **The grader verdict drives routing, not the board lane.** dev-3.0's hardcoded
- *    on-exit hook may have force-advanced the card `review-by-ai → review-by-user`
- *    (DISCOVERY §Q5), so we route off `review.json` from **either** review lane.
+ *  - **The reviewer verdict drives routing, not the board lane.** dev-3.0's hardcoded
+ *    on-exit hook may have force-advanced the card `review-by-ai → review-by-user`,
+ *    so we route off `review.json` from **either** review lane.
  *
  * Guardrail caps (consecutive-failure / iteration / no-progress / oscillation /
- * stall / budget) are M3. They are injected here as a single {@link GiveUpPredicate}
+ * stall / budget) are injected here as a single {@link GiveUpPredicate}
  * and **defaulted to {@link allowAll}** (never give up) — this module implements
  * none of that logic.
  *
@@ -32,10 +32,10 @@ import type {
   CustomColumnId,
   Lane,
 } from "./types.ts";
-import type { GraderReview, Observation } from "../ports/dto.ts";
+import type { Review, Observation } from "../ports/dto.ts";
 
 /**
- * Verdict of a guardrail give-up check (PLAN §7). `stop:true` ⇒ abandon the card
+ * Verdict of a guardrail give-up check. `stop:true` ⇒ abandon the card
  * to the human; `reason` is the diagnostic recorded on the {@link Action} kind
  * `"GiveUp"`.
  */
@@ -45,11 +45,11 @@ export interface GiveUpVerdict {
 }
 
 /**
- * The guardrail give-up check, injected into {@link decide} (PLAN §7, evaluated
- * before any fix re-prompt and while a card is still working). M1 ships only the
- * {@link allowAll} stub; the real predicate (caps, no-progress, oscillation,
- * stall, budget) lands in M3. It receives `obs` as well as the journal so stall /
- * dead-session detection has the inputs it needs (a superset of PLAN §7's
+ * The guardrail give-up check, injected into {@link decide} (evaluated
+ * before any fix re-prompt and while a card is still working). Ships only the
+ * {@link allowAll} stub for now; the real predicate (caps, no-progress, oscillation,
+ * stall, budget) lands later. It receives `obs` as well as the journal so stall /
+ * dead-session detection has the inputs it needs (a superset of a plain
  * `(journal, policy, now)` signature).
  */
 export type GiveUpPredicate = (
@@ -59,18 +59,18 @@ export type GiveUpPredicate = (
   now: number,
 ) => GiveUpVerdict;
 
-/** The M1 default give-up predicate: never give up (guardrails are M3). */
+/** The default give-up predicate: never give up (guardrails land later). */
 export const allowAll: GiveUpPredicate = () => ({ stop: false });
 
 /**
- * Well-known id of the no-agent **merge-trigger** custom column (PLAN §6). Moving
- * a card here is the human's "merge it" signal. The real id is repo-configured
- * (resolved in M4); we treat this conventional value as the trigger and leave
- * **every other** custom column untouched (Finding #6a).
+ * Well-known id of the no-agent **merge-trigger** custom column. Moving
+ * a card here is the human's "merge it" signal. The real id is repo-configured;
+ * we treat this conventional value as the trigger and leave
+ * **every other** custom column untouched.
  */
 export const READY_TO_MERGE: CustomColumnId = "ready_to_merge";
 
-/** The empty action list — the canonical NoOp (Finding #4). */
+/** The empty action list — the canonical NoOp. */
 const NOOP: Action[] = [];
 
 /** Last journaled attempt, or `undefined` when the card has never been attempted. */
@@ -78,18 +78,17 @@ function lastAttempt(journal: CardJournal): CardJournal["attempts"][number] | un
   return journal.attempts[journal.attempts.length - 1];
 }
 
-/** True iff some recorded attempt was over this exact diff (edge-detection, Finding #2). */
+/** True iff some recorded attempt was over this exact diff (edge-detection). */
 function attemptedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
   return diffHash !== undefined && journal.attempts.some((a) => a.diffHash === diffHash);
 }
 
 /**
  * True iff a **rejection** (red attempt) was already recorded for this exact diff —
- * i.e. its `diffHash` has been "acted on" in the sense PLAN §6 row 354 uses for the
- * grader fix-loop. A head that only passed checks has just a green attempt (not
- * rejected yet); once the shell folds the grader's `changes_requested` as a red
- * `AttemptRecord` for that head, this returns true and a sticky `review.json`
- * stops re-sending the fix (Finding #2).
+ * i.e. its `diffHash` has been "acted on" for the reviewer fix-loop. A head that
+ * only passed checks has just a green attempt (not rejected yet); once the shell
+ * folds the reviewer's `changes_requested` as a red `AttemptRecord` for that head,
+ * this returns true and a sticky `review.json` stops re-sending the fix.
  */
 function rejectedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
   return (
@@ -111,7 +110,7 @@ function moveLane(
   return action;
 }
 
-/** Findings text for a producer fix-loop after our mechanical checks went red. */
+/** Findings text for a implementor fix-loop after our mechanical checks went red. */
 function checkFailureFindings(card: Card, journal: CardJournal): string {
   const last = lastAttempt(journal);
   const sig = last?.failureSignature ? ` (failure signature ${last.failureSignature})` : "";
@@ -121,17 +120,17 @@ function checkFailureFindings(card: Card, journal: CardJournal): string {
   );
 }
 
-/** Findings text routed back to the producer when the grader requests changes. */
-function graderFindings(review: GraderReview): string {
-  const blocking = review.blocking.length > 0 ? review.blocking : ["(grader requested changes)"];
-  return `The independent grader requested changes:\n- ${blocking.join("\n- ")}`;
+/** Findings text routed back to the implementor when the reviewer requests changes. */
+function graderFindings(review: Review): string {
+  const blocking = review.blocking.length > 0 ? review.blocking : ["(reviewer requested changes)"];
+  return `The independent reviewer requested changes:\n- ${blocking.join("\n- ")}`;
 }
 
 /**
- * Merge-gate dispatch on `policy.merge` (PLAN §6). Returns the action(s) that take
+ * Merge-gate dispatch on `policy.merge`. Returns the action(s) that take
  * a card across the human merge gate for the given policy. `expect` on `Merge` is
  * {@link READY_TO_MERGE}: the adapter re-verifies the column **and** `isMerged`
- * immediately before the irreversible push (CAS guard, Finding #7).
+ * immediately before the irreversible push (CAS guard).
  */
 export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJournal): Action[] {
   switch (policy.merge) {
@@ -144,7 +143,7 @@ export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJou
       return [{ kind: "Merge", card, expect: READY_TO_MERGE }];
     }
     case "fix_until_green_and_merge":
-      // The in-progress/grader fix-loop already enforced green + grader-pass.
+      // The in-progress/reviewer fix-loop already enforced green + reviewer-pass.
       return [{ kind: "Merge", card, expect: READY_TO_MERGE }];
     default:
       return assertNever(policy.merge);
@@ -152,7 +151,7 @@ export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJou
 }
 
 /**
- * Apply a human resume (PLAN §6, Finding #6b): dragging a card out of
+ * Apply a human resume: dragging a card out of
  * `user-questions` back to `in-progress` means "blocker resolved, retry". Resets
  * `consecutiveFailures` and clears `journal.terminal` (so a deliberately-revived
  * card isn't still flagged `given_up`) while **preserving** the absolute attempt
@@ -165,17 +164,17 @@ export function applyHumanResume(journal: CardJournal): CardJournal {
 }
 
 /**
- * The reconcile decision (PLAN §6). Pure: `Action[]` only, no I/O. `[]` = NoOp.
+ * The reconcile decision. Pure: `Action[]` only, no I/O. `[]` = NoOp.
  *
  * Routing key = the card's **custom column if set, else its built-in `lane`**.
  *
  * @param card     Read-only board projection.
  * @param journal  Durable per-card bookkeeping (the source of truth for state).
  * @param policy   Resolved per-card policy.
- * @param obs      Cheap side-effect-free snapshot (§4); the check outcome is NOT
+ * @param obs      Cheap side-effect-free snapshot; the check outcome is NOT
  *                 read from here — it comes from `journal.attempts`.
  * @param now      Epoch ms (from `ClockPort.now`).
- * @param shouldGiveUp  Guardrail predicate; defaults to {@link allowAll} (M3 stub).
+ * @param shouldGiveUp  Guardrail predicate; defaults to {@link allowAll} (stub).
  */
 export function decide(
   card: Card,
@@ -190,9 +189,9 @@ export function decide(
 
   switch (key) {
     case "todo":
-      // decide() always PROPOSES the promotion; the shell's fleet gate (§7) grants
+      // decide() always PROPOSES the promotion; the shell's fleet gate grants
       // or denies the slot. The MoveLane triggers dev-3.0's activateTask (worktree +
-      // producer); LaunchProducer is a no-op on the default in-band adapter (#4).
+      // implementor); LaunchProducer is a no-op on the default in-band adapter.
       return [moveLane(card, "in-progress", "todo"), { kind: "LaunchProducer", card }];
 
     case "in-progress":
@@ -200,7 +199,7 @@ export function decide(
 
     case "review-by-ai":
     case "review-by-user":
-      // Verdict-driven: route off review.json from EITHER review lane (§Q5).
+      // Verdict-driven: route off review.json from EITHER review lane.
       return decideReview(key, card, journal, policy, obs, now, shouldGiveUp);
 
     case "review-by-colleague":
@@ -219,7 +218,7 @@ export function decide(
       return NOOP;
 
     default:
-      // A custom column. The merge-trigger is the only one we own (Finding #6a).
+      // A custom column. The merge-trigger is the only one we own.
       if (key === READY_TO_MERGE) {
         if (obs.merged || journal.terminal === "merged") return NOOP; // exactly-once
         return mergeGateAction(card, policy, journal);
@@ -228,7 +227,7 @@ export function decide(
   }
 }
 
-/** `in-progress` routing (PLAN §6). */
+/** `in-progress` routing. */
 function decideInProgress(
   card: Card,
   journal: CardJournal,
@@ -239,14 +238,14 @@ function decideInProgress(
 ): Action[] {
   const triedThisDiff = attemptedDiff(journal, obs.diffHash);
 
-  // 1. Producer self-report present (its presence is the only thing we read from it).
+  // 1. Implementor self-report present (its presence is the only thing we read from it).
   if (obs.result) {
     if (obs.result.status === "blocked") {
       // Human handoff — NOT a failure: don't run checks, don't touch the caps,
       // don't set terminal. Edge-detect by diffHash so a resumed card isn't
-      // immediately re-parked (Finding #5/#2).
+      // immediately re-parked.
       if (!triedThisDiff) {
-        const note = obs.result.blockedQuestion ?? "Producer reported blocked.";
+        const note = obs.result.blockedQuestion ?? "Implementor reported blocked.";
         return [moveLane(card, "user-questions", "in-progress", note)];
       }
       return NOOP; // blocked already handled (sticky result.json)
@@ -254,49 +253,49 @@ function decideInProgress(
 
     // status === "done".
     if (obs.diffHash === undefined) {
-      // Claims done but changed nothing vs base — degenerate (PLAN §10).
+      // Claims done but changed nothing vs base — degenerate.
       return [{ kind: "GiveUp", card, reason: "empty-diff" }];
     }
     if (!triedThisDiff) {
-      // Never trust claimedTestsPass — run the checks ourselves (PLAN §2 #8).
+      // Never trust claimedTestsPass — run the checks ourselves.
       return [{ kind: "RunChecks", card }];
     }
     // This diff was already attempted: fall through to the journaled outcome —
-    // the result.json is sticky and must not re-fire RunChecks (Finding #2).
+    // the result.json is sticky and must not re-fire RunChecks.
   }
 
   // 2. Route off the last journaled attempt. The shell folds BOTH RunChecks results
-  //    and grader verdicts into AttemptRecords, so a grader-rejected head reads as a
-  //    red attempt here (which then drives the producer fix-loop, not another grade).
+  //    and reviewer verdicts into AttemptRecords, so a reviewer-rejected head reads as a
+  //    red attempt here (which then drives the implementor fix-loop, not another review).
   const last = lastAttempt(journal);
   if (last?.outcome === "green") {
-    // Green checks ⇒ hand to the independent grader. The MoveLane triggers dev-3.0's
-    // column agent; LaunchGrader is a no-op on the default in-band adapter (§8).
+    // Green checks ⇒ hand to the independent reviewer. The MoveLane triggers dev-3.0's
+    // column agent; LaunchGrader is a no-op on the default in-band adapter.
     return [moveLane(card, "review-by-ai", "in-progress"), { kind: "LaunchGrader", card }];
   }
   if (last?.outcome === "red") {
     // Guardrail (incl. the time-based stall) is re-evaluated EVERY tick, even while
-    // we wait for the producer — so a producer that goes silent after the fix still
+    // we wait for the implementor — so a implementor that goes silent after the fix still
     // gives up correctly.
     const verdict = shouldGiveUp(journal, policy, obs, now);
     if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
     // Deliver the fix exactly once per attempt. `result.json` is never deleted, so
-    // without this we would re-send every tick while the producer is mid-fix (the
-    // sticky-result NoOp, PLAN §6 / Finding #2). A *new* red attempt — even over a
+    // without this we would re-send every tick while the implementor is mid-fix (the
+    // sticky-result NoOp). A *new* red attempt — even over a
     // repeated diff — is a fresh fix opportunity, keeping this compatible with the
-    // oscillation guardrail (M3).
+    // oscillation guardrail.
     if (last.fixPromptSent) return NOOP;
     return [{ kind: "SendFixPrompt", card, findings: checkFailureFindings(card, journal) }];
   }
 
   // 3. Still working (no actionable result / attempt). Stall is one of the injected
-  //    give-up predicates (§7); with the default stub we simply wait.
+  //    give-up predicates; with the default stub we simply wait.
   const verdict = shouldGiveUp(journal, policy, obs, now);
   if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "stall" }];
   return NOOP;
 }
 
-/** `review-by-ai` / `review-by-user` routing — verdict-driven (PLAN §6, §Q5). */
+/** `review-by-ai` / `review-by-user` routing — verdict-driven. */
 function decideReview(
   key: Lane,
   card: Card,
@@ -307,10 +306,10 @@ function decideReview(
   shouldGiveUp: GiveUpPredicate,
 ): Action[] {
   const review = obs.review;
-  if (!review) return NOOP; // grader still running / no verdict yet — human/grader gate
+  if (!review) return NOOP; // reviewer still running / no verdict yet — human/reviewer gate
 
   if (review.verdict === "changes_requested") {
-    // Edge-detect by diffHash (PLAN §6 row 354, Finding #2): a rejection is "acted
+    // Edge-detect by diffHash: a rejection is "acted
     // on" once the shell has folded it as a red AttemptRecord for this head, so a
     // sticky review.json doesn't re-send. A head that only passed checks has just a
     // green attempt → not yet rejected → route the findings back.
@@ -318,8 +317,8 @@ function decideReview(
     const verdict = shouldGiveUp(journal, policy, obs, now);
     if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
     // Move active→active (dev-3.0 does NOT respawn) and route findings to the
-    // still-alive producer. `--if-status <key>` also no-ops dev-3.0's on-exit
-    // auto-advance from review-by-ai (Finding #4).
+    // still-alive implementor. `--if-status <key>` also no-ops dev-3.0's on-exit
+    // auto-advance from review-by-ai.
     return [moveLane(card, "in-progress", key), { kind: "SendFixPrompt", card, findings: graderFindings(review) }];
   }
 

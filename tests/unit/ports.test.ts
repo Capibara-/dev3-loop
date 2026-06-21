@@ -1,5 +1,5 @@
 /**
- * Compile-only type test for the ports & DTOs (PLAN §5/§10/§11 / T5 acceptance).
+ * Compile-only type test for the ports & DTOs.
  *
  * Its real job is to fail `tsc --noEmit` if a port interface or DTO shape drifts
  * from the spec: the file constructs a concrete value for every DTO and a stub
@@ -17,12 +17,12 @@ import type {
   ConfigPort,
   EventLogPort,
   GitPort,
-  GraderReview,
+  Review,
   JournalPort,
   LoopEvent,
   MergeResult,
   PrResult,
-  ProducerResult,
+  ImplementorResult,
   RuntimePort,
 } from "../../src/ports/index.ts";
 
@@ -41,8 +41,8 @@ const card: Card = {
     maxConsecutiveFailures: 3,
     maxTotalAttempts: 6,
     stallMs: 600_000,
-    producer: { agent: "claude" },
-    grader: { agent: "gemini" },
+    implementor: { agent: "claude" },
+    reviewer: { agent: "gemini" },
     checksCmd: "tsc --noEmit",
   },
 };
@@ -58,13 +58,13 @@ const checkResult: CheckResult = {
 };
 const mergeResult: MergeResult = { merged: true, alreadyMerged: false, commit: "deadbeef" };
 const prResult: PrResult = { url: "https://example/pr/1", number: 1, alreadyExisted: false };
-const producerResult: ProducerResult = {
+const producerResult: ImplementorResult = {
   status: "done",
   summary: "did it",
   blockedQuestion: null,
   claimedTestsPass: true,
 };
-const graderReview: GraderReview = {
+const review: Review = {
   verdict: "changes_requested",
   criteria: [{ criterion: "compiles", met: false, note: "type error" }],
   blocking: ["fix the type error"],
@@ -97,7 +97,7 @@ const runtime: RuntimePort = {
   capture: async () => null,
   isAlive: async () => true,
   readResult: async () => producerResult,
-  readReview: async () => graderReview,
+  readReview: async () => review,
 };
 const git: GitPort = {
   diff: async () => "",
@@ -124,5 +124,5 @@ test("ports and DTOs compile against stub implementations", async () => {
   expect((await config.policyFor(card)).merge).toBe("open_pr");
   expect(checkResult.passed).toBe(false);
   expect(prResult.alreadyExisted).toBe(false);
-  expect(graderReview.verdict).toBe("changes_requested");
+  expect(review.verdict).toBe("changes_requested");
 });

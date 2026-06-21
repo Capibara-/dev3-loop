@@ -21,8 +21,8 @@ const policy: CardPolicy = {
   maxConsecutiveFailures: 3,
   maxTotalAttempts: 6,
   stallMs: 600_000,
-  producer: { agent: "claude" },
-  grader: { agent: "gemini" },
+  implementor: { agent: "claude" },
+  reviewer: { agent: "gemini" },
   checksCmd: "tsc --noEmit",
 };
 
@@ -59,7 +59,7 @@ test("FakeRuntime scripts result/review and records launches", async () => {
   expect(await runtime.readResult(card)).toBeNull();
   expect(await runtime.isAlive(card)).toBe(false);
 
-  await runtime.launchProducer(card, policy.producer, "go");
+  await runtime.launchProducer(card, policy.implementor, "go");
   runtime.setResult(card.id, {
     status: "done",
     summary: "did it",
