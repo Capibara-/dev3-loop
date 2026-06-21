@@ -13,7 +13,6 @@ import {
   FileConfig,
   POLICY_DEFAULTS,
   parseGlobalConfig,
-  resolveModel,
   resolvePolicy,
 } from "../../src/app/config.ts";
 
@@ -57,17 +56,10 @@ function mkCard(over: Partial<Card> = {}): Card {
   };
 }
 
-/** Collects warnings instead of writing to the console. */
-function recorder(): { warn: (m: string) => void; messages: string[] } {
-  const messages: string[] = [];
-  return { warn: (m) => messages.push(m), messages };
-}
-
 // --- valid load + defaults ------------------------------------------------
 
 test("valid config loads and fills global defaults", () => {
-  const log = recorder();
-  const cfg = FileConfig.fromObject(rawConfig(), log).global;
+  const cfg = FileConfig.fromObject(rawConfig()).global;
 
   expect(cfg.stateDir).toBe("/var/dev3-loop");
   expect(cfg.dev3StorePath).toBe(CONFIG_DEFAULTS.dev3StorePath);
@@ -75,16 +67,15 @@ test("valid config loads and fills global defaults", () => {
   expect(cfg.tickIntervalMs).toBe(CONFIG_DEFAULTS.tickIntervalMs);
   expect(cfg.concurrencyCap).toBe(CONFIG_DEFAULTS.concurrencyCap);
   expect(cfg.dailySpendCeiling).toBe(CONFIG_DEFAULTS.dailySpendCeiling);
-  expect(log.messages).toEqual([]);
 });
 
 test("policy caps default when omitted, explicit values win", () => {
-  const { config } = parseGlobalConfig(rawConfig());
+  const config = parseGlobalConfig(rawConfig());
   expect(config.defaultPolicy.maxConsecutiveFailures).toBe(POLICY_DEFAULTS.maxConsecutiveFailures);
   expect(config.defaultPolicy.maxTotalAttempts).toBe(POLICY_DEFAULTS.maxTotalAttempts);
   expect(config.defaultPolicy.stallMs).toBe(POLICY_DEFAULTS.stallMs);
 
-  const { config: c2 } = parseGlobalConfig(
+  const c2 = parseGlobalConfig(
     rawConfig({
       defaultPolicy: {
         merge: "open_pr",
@@ -140,8 +131,9 @@ describe("producer ≠ grader (PLAN §8, §13 test 3)", () => {
     expect(() => parseGlobalConfig(bad)).toThrow(/repoPolicies\["owner\/name"\].*must differ/s);
   });
 
-  test("same model, different config ⇒ warns but loads", () => {
-    const log = recorder();
+  test("distinct configs ⇒ accepted, even if the same model (model diversity not enforced)", () => {
+    // Only the (agent, config) pair must differ; a same-model grader is a
+    // recommendation, not a boot error (the warn was intentionally dropped).
     const cfg = FileConfig.fromObject(
       rawConfig({
         defaultPolicy: {
@@ -151,28 +143,9 @@ describe("producer ≠ grader (PLAN §8, §13 test 3)", () => {
           checksCmd: "tsc --noEmit",
         },
       }),
-      log,
     );
-    expect(cfg.global.defaultPolicy.merge).toBe("merge_when_green");
-    expect(log.messages).toHaveLength(1);
-    expect(log.messages[0]).toMatch(/same model "opus-4\.8"/);
+    expect(cfg.global.defaultPolicy.grader.config).toBe("claude-default-opus48-bypass");
   });
-
-  test("genuinely different models ⇒ no warning", () => {
-    const log = recorder();
-    FileConfig.fromObject(rawConfig(), log); // claude opus-4.8 vs gemini-3.1-pro
-    expect(log.messages).toEqual([]);
-  });
-});
-
-// --- model registry -------------------------------------------------------
-
-test("resolveModel tolerates permission suffixes and default config", () => {
-  expect(resolveModel({ agent: "builtin-claude", config: "claude-default-opus48" })).toBe("opus-4.8");
-  expect(resolveModel({ agent: "builtin-claude", config: "claude-default-opus48-bypass" })).toBe("opus-4.8");
-  expect(resolveModel({ agent: "builtin-claude" })).toBe("opus-4.8"); // agent default config
-  expect(resolveModel({ agent: "builtin-gemini", config: "gemini-default" })).toBe("gemini-3.1-pro");
-  expect(resolveModel({ agent: "mystery-agent", config: "unknown-config" })).toBeUndefined();
 });
 
 // --- per-repo + per-card policy resolution --------------------------------
@@ -225,28 +198,25 @@ describe("policyFor resolution (repo defaults then card overrides)", () => {
     await expect(cfg.policyFor(card)).rejects.toThrow(/must differ/);
   });
 
-  test("a card override that introduces same-model pairing ⇒ warns via logger", async () => {
-    const log = recorder();
-    const cfg = FileConfig.fromObject(rawConfig(), log);
-    log.messages.length = 0; // clear boot-time messages
+  test("a card override that only changes config (same model) is accepted", async () => {
+    // Distinct (agent, config) is enough; a same-model grader is not rejected.
+    const cfg = FileConfig.fromObject(rawConfig());
     const card = mkCard({
       prompt: [
         "```dev3-loop",
-        // override grader to a permission-suffix variant of the same model (opus-4.8)
         JSON.stringify({ grader: { agent: "builtin-claude", config: "claude-default-opus48-auto" } }),
         "```",
       ].join("\n"),
     });
-    await cfg.policyFor(card);
-    expect(log.messages).toHaveLength(1);
-    expect(log.messages[0]).toMatch(/same model/);
+    const policy = await cfg.policyFor(card);
+    expect(policy.grader.config).toBe("claude-default-opus48-auto");
   });
 });
 
 // --- resolvePolicy unit ---------------------------------------------------
 
 test("resolvePolicy applies only present override keys, last writer wins", () => {
-  const { config } = parseGlobalConfig(rawConfig());
+  const config = parseGlobalConfig(rawConfig());
   const base = config.defaultPolicy;
   const merged = resolvePolicy(base, { merge: "open_pr" }, { stallMs: 42 });
   expect(merged.merge).toBe("open_pr");

@@ -8,15 +8,17 @@
  * readable {@link ConfigError}.
  *
  * The single hard invariant enforced here is **producer ≠ grader** (PLAN §8,
- * constraint #6): an identical `(agent, config)` pair is a boot error; two specs
- * that differ only by config but resolve to the **same model** earn a warning
- * (grading must be model-independent — DISCOVERY §Q4).
+ * constraint #6): an identical `(agent, config)` pair is a boot error. A
+ * different *model* for the grader is recommended (decorrelated blind spots) but
+ * **not** enforced — the real grading rigor comes from re-running mechanical
+ * checks (constraint #8), fresh context, and a read-only structured verdict, not
+ * from model diversity.
  *
  * **Purity boundary:** parse + validate ({@link parseGlobalConfig},
- * {@link parseCardPolicy}, {@link resolvePolicy}, {@link assertDistinctAgents},
- * {@link resolveModel}) are pure and exhaustively unit-testable with zero I/O.
- * The **only** file I/O is {@link FileConfig.load}; tests use
- * {@link FileConfig.fromObject} (parsed object, no disk).
+ * {@link parseCardPolicy}, {@link resolvePolicy}, {@link assertDistinctAgents})
+ * are pure and exhaustively unit-testable with zero I/O. The **only** file I/O is
+ * {@link FileConfig.load}; tests use {@link FileConfig.fromObject} (parsed
+ * object, no disk).
  *
  * The repo keeps `types: []` (no Node/Bun globals in scope), so — mirroring
  * `cli.ts` — we declare the tiny ambient surface this module actually touches
@@ -28,7 +30,6 @@
 import type { AgentSpec, Card, CardPolicy, MergePolicy } from "../domain/types.ts";
 import type { ConfigPort } from "../ports/config.ts";
 
-declare const console: { warn(...args: readonly unknown[]): void };
 declare const Bun: { file(path: string): { text(): Promise<string> } };
 
 // --- defaults -------------------------------------------------------------
@@ -60,59 +61,6 @@ const MERGE_POLICIES: readonly MergePolicy[] = [
   "fix_until_green_and_merge",
 ];
 
-// --- agent/config → model registry (DISCOVERY §Q4) ------------------------
-
-/**
- * Resolved model per dev-3.0 `configId`, from the registry facts in
- * DISCOVERY §Q4. Used only to decide whether two **distinct** specs collapse to
- * the same model (a warn condition); an unknown config resolves to `undefined`
- * and is never treated as a collision.
- */
-export const CONFIG_MODELS: Readonly<Record<string, string>> = {
-  "claude-default": "fable-5",
-  "claude-default-opus48": "opus-4.8",
-  "claude-default-opus47": "opus-4.7",
-  "claude-default-sonnet": "sonnet-4.6",
-  "codex-default": "gpt-codex",
-  "gemini-default": "gemini-3.1-pro",
-  "gemini-flash": "gemini-flash",
-  "cursor-default": "opus-4.6",
-  "cursor-gpt": "gpt-5.3-codex",
-  "cursor-gemini": "gemini-3.1-pro",
-  "opencode-default": "opus-4.6",
-};
-
-/** Default `configId` per agent when an {@link AgentSpec} omits `config` (DISCOVERY §Q4). */
-export const AGENT_DEFAULT_CONFIG: Readonly<Record<string, string>> = {
-  "builtin-claude": "claude-default-opus48",
-  "builtin-codex": "codex-default",
-  "builtin-gemini": "gemini-default",
-  "builtin-cursor": "cursor-default",
-};
-
-/** Permission-mode config suffixes that don't change the underlying model (DISCOVERY §Q4). */
-const PERMISSION_SUFFIXES = ["-approvals", "-auto", "-bypass", "-dontask", "-plan"] as const;
-
-/**
- * Resolve the underlying model for an {@link AgentSpec}, or `undefined` when it
- * can't be determined from the registry. Tolerates permission-mode suffixes
- * (e.g. `claude-default-opus48-bypass` resolves like `claude-default-opus48`)
- * and falls back to the agent's default config when `config` is omitted.
- */
-export function resolveModel(spec: AgentSpec): string | undefined {
-  const configId = spec.config ?? AGENT_DEFAULT_CONFIG[spec.agent];
-  if (configId === undefined) return undefined;
-  const direct = CONFIG_MODELS[configId];
-  if (direct !== undefined) return direct;
-  for (const suffix of PERMISSION_SUFFIXES) {
-    if (configId.endsWith(suffix)) {
-      const base = CONFIG_MODELS[configId.slice(0, -suffix.length)];
-      if (base !== undefined) return base;
-    }
-  }
-  return undefined;
-}
-
 // --- errors ---------------------------------------------------------------
 
 /** Thrown on any boot-time config validation failure; carries a readable message. */
@@ -134,19 +82,16 @@ function specLabel(spec: AgentSpec): string {
 }
 
 /**
- * Enforce producer/grader independence for one resolved pairing (PLAN §8).
+ * Enforce producer/grader independence for one resolved pairing (PLAN §8,
+ * constraint #6): an identical `(agent, config)` pair is literally the same
+ * invocation profile (zero independence) ⇒ throws {@link ConfigError}.
  *
- * - **HARD** — identical `(agent, config)` ⇒ throws {@link ConfigError}.
- * - **SOFT** — distinct specs that resolve to the same model ⇒ returns a warning
- *   string (the caller emits it); grading is then not model-independent.
- *
- * @returns the warning string, or `null` when the pairing is fully independent.
+ * A *different model* for the grader is recommended but deliberately **not**
+ * enforced — the real grading guarantees are checks-as-truth, fresh context, and
+ * a read-only structured verdict (PLAN §8 / constraint #8), none of which depend
+ * on model diversity.
  */
-export function assertDistinctAgents(
-  producer: AgentSpec,
-  grader: AgentSpec,
-  where: string,
-): string | null {
+export function assertDistinctAgents(producer: AgentSpec, grader: AgentSpec, where: string): void {
   if (sameAgentSpec(producer, grader)) {
     throw new ConfigError(
       `${where}: producer and grader must differ but both are "${specLabel(producer)}". ` +
@@ -155,16 +100,6 @@ export function assertDistinctAgents(
         `grader builtin-gemini/gemini-default).`,
     );
   }
-  const producerModel = resolveModel(producer);
-  const graderModel = resolveModel(grader);
-  if (producerModel !== undefined && graderModel !== undefined && producerModel === graderModel) {
-    return (
-      `${where}: producer "${specLabel(producer)}" and grader "${specLabel(grader)}" differ only by ` +
-      `config but resolve to the same model "${producerModel}" — grading is not model-independent ` +
-      `(PLAN §8). Prefer a different-model grader.`
-    );
-  }
-  return null;
 }
 
 // --- pure validators ------------------------------------------------------
@@ -366,22 +301,14 @@ export interface GlobalConfig {
   repoPolicies: Record<string, PolicyOverrides>;
 }
 
-/** Result of {@link parseGlobalConfig}: the config plus any soft warnings. */
-export interface ParsedGlobalConfig {
-  config: GlobalConfig;
-  /** Non-fatal independence warnings (same-model producer/grader); caller emits them. */
-  warnings: string[];
-}
-
 /**
  * Validate a raw (already-JSON-parsed) global-config object. Fills defaults,
  * **fails fast** with a readable {@link ConfigError} on any schema violation, and
  * runs the producer≠grader assertion against the default policy **and** every
  * repo-resolved policy (PLAN §8/§11). Pure — no I/O.
  */
-export function parseGlobalConfig(raw: unknown): ParsedGlobalConfig {
+export function parseGlobalConfig(raw: unknown): GlobalConfig {
   const o = asObject(raw, "config");
-  const warnings: string[] = [];
 
   const stateDir = o["stateDir"];
   if (typeof stateDir !== "string" || stateDir.length === 0) {
@@ -392,12 +319,7 @@ export function parseGlobalConfig(raw: unknown): ParsedGlobalConfig {
     throw new ConfigError("config.defaultPolicy is required");
   }
   const defaultPolicy = parseCardPolicy(o["defaultPolicy"], "config.defaultPolicy");
-  const defaultWarn = assertDistinctAgents(
-    defaultPolicy.producer,
-    defaultPolicy.grader,
-    "config.defaultPolicy",
-  );
-  if (defaultWarn) warnings.push(defaultWarn);
+  assertDistinctAgents(defaultPolicy.producer, defaultPolicy.grader, "config.defaultPolicy");
 
   const repoPolicies: Record<string, PolicyOverrides> = {};
   if (o["repoPolicies"] !== undefined) {
@@ -408,8 +330,7 @@ export function parseGlobalConfig(raw: unknown): ParsedGlobalConfig {
       repoPolicies[repo] = overrides;
       // Boot-check the repo-resolved pairing too — a repo may override producer/grader.
       const merged = resolvePolicy(defaultPolicy, overrides);
-      const repoWarn = assertDistinctAgents(merged.producer, merged.grader, where);
-      if (repoWarn) warnings.push(repoWarn);
+      assertDistinctAgents(merged.producer, merged.grader, where);
     }
   }
 
@@ -427,19 +348,10 @@ export function parseGlobalConfig(raw: unknown): ParsedGlobalConfig {
     defaultPolicy,
     repoPolicies,
   };
-  return { config, warnings };
+  return config;
 }
 
 // --- the ConfigPort boundary ----------------------------------------------
-
-/** Sink for soft warnings; defaults to `console.warn`. */
-export interface ConfigLogger {
-  warn(message: string): void;
-}
-
-const DEFAULT_LOGGER: ConfigLogger = {
-  warn: (message) => console.warn(message),
-};
 
 /**
  * File-backed {@link ConfigPort}. Resolves each card's policy as
@@ -454,18 +366,15 @@ export class FileConfig implements ConfigPort {
   private constructor(
     /** The validated global config. */
     readonly global: GlobalConfig,
-    private readonly logger: ConfigLogger,
   ) {}
 
-  /** Build from an already-parsed object (no file I/O); emits warnings via `logger`. */
-  static fromObject(raw: unknown, logger: ConfigLogger = DEFAULT_LOGGER): FileConfig {
-    const { config, warnings } = parseGlobalConfig(raw);
-    for (const w of warnings) logger.warn(w);
-    return new FileConfig(config, logger);
+  /** Build from an already-parsed object (no file I/O). */
+  static fromObject(raw: unknown): FileConfig {
+    return new FileConfig(parseGlobalConfig(raw));
   }
 
   /** Read + parse a JSON config file at `path`. The only file I/O in this module. */
-  static async load(path: string, logger: ConfigLogger = DEFAULT_LOGGER): Promise<FileConfig> {
+  static async load(path: string): Promise<FileConfig> {
     let text: string;
     try {
       text = await Bun.file(path).text();
@@ -478,7 +387,7 @@ export class FileConfig implements ConfigPort {
     } catch (e) {
       throw new ConfigError(`config file at ${path} is not valid JSON: ${(e as Error).message}`);
     }
-    return FileConfig.fromObject(raw, logger);
+    return FileConfig.fromObject(raw);
   }
 
   // `async` so a failed independence re-check surfaces as a rejection (the
@@ -487,8 +396,7 @@ export class FileConfig implements ConfigPort {
     const repoOverride = this.global.repoPolicies[card.repo];
     const cardOverride = parseCardPolicyOverrides(card);
     const resolved = resolvePolicy(this.global.defaultPolicy, repoOverride, cardOverride);
-    const warn = assertDistinctAgents(resolved.producer, resolved.grader, `resolved policy for card ${card.id}`);
-    if (warn) this.logger.warn(warn);
+    assertDistinctAgents(resolved.producer, resolved.grader, `resolved policy for card ${card.id}`);
     return resolved;
   }
 }
