@@ -2,10 +2,17 @@
 /**
  * `dev3-loop` CLI entrypoint (M0/T2 — PLAN.md §12).
  *
- * Subcommand handlers are stubs that print "not implemented yet"; they get
- * wired up in later milestones (run=M7+, dry-run=M7, replay=M2, preflight=M4).
  * Argument parsing lives in the pure {@link parseArgs} so it is unit-testable
  * without touching `process`/`Bun`.
+ *
+ * **Wiring status (M1, T10).** `run`/`dry-run` are the front door to the
+ * reconcile loop: the composition root + interval runner + dry-run mode are
+ * implemented and exercised against in-memory Fakes (`startReconciler` in
+ * {@link module:app/loop}; see the loop tests). They cannot run end-to-end yet
+ * because the **real dev-3.0 adapters land in M4** (board/runtime/git/journal)
+ * and the dry-run E2E is M7 (PLAN §15/§16) — so the CLI commands still report
+ * "not implemented yet" while the loop core they will drive is done. `replay` is
+ * M2 and `preflight` is M4.
  */
 
 // The repo's tsconfig keeps `types: []`, so Node/Bun globals are not in scope.
@@ -41,6 +48,19 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
   "dry-run": "Print the action plan without mutating anything (not implemented yet)",
   replay: "Rebuild journal state from the event log (not implemented yet)",
   preflight: "Validate the dev-3.0 store + config before running (not implemented yet)",
+};
+
+/**
+ * Per-command status line printed when a subcommand is invoked. The loop core
+ * `run`/`dry-run` will drive is implemented (T10); the missing piece is the real
+ * dev-3.0 adapters (M4) — so each still reports "not implemented yet" with the
+ * milestone that unblocks it.
+ */
+const SUBCOMMAND_STATUS: Record<Subcommand, string> = {
+  run: "run: not implemented yet — reconcile loop is wired (app/loop startReconciler) but the real dev-3.0 adapters land in M4",
+  "dry-run": "dry-run: not implemented yet — the loop's dry-run mode is implemented + tested against fakes; the E2E command lands in M7 (needs M4 adapters)",
+  replay: "replay: not implemented yet (M2)",
+  preflight: "preflight: not implemented yet (M4)",
 };
 
 /** Version string, single-sourced from package.json. */
@@ -108,7 +128,7 @@ export function run(argv: readonly string[], io: Io): number {
       io.err(usage());
       return 1;
     case "command":
-      io.out(`${parsed.command}: not implemented yet`);
+      io.out(SUBCOMMAND_STATUS[parsed.command]);
       return 0;
   }
 }
