@@ -1,11 +1,7 @@
-/**
- * Per-card give-up guardrails — pure. The real GiveUpPredicate the loop
- * injects into decide() (which itself defaults to allowAll). First trip wins.
- * Best-effort inputs (signature, heartbeat, tokenBudget) degrade gracefully:
- * absence never trips and never skips give-up.
- *
- * @module domain/guardrails
- */
+// Per-card give-up guardrails — pure. The real GiveUpPredicate the loop injects into
+// decide() (which itself defaults to allowAll). First trip wins. Best-effort inputs
+// (signature, heartbeat, tokenBudget) degrade gracefully: absence never trips and never
+// skips give-up.
 
 import type { AttemptRecord, CardJournal, CardPolicy } from "./types.ts";
 import type { Observation } from "../ports/dto.ts";

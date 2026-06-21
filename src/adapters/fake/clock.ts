@@ -1,13 +1,8 @@
-/**
- * Settable {@link ClockPort} for tests. The pure domain reads time
- * only through this seam, so stall/heartbeat/timestamp logic is deterministic.
- *
- * @module adapters/fake/clock
- */
+// Settable ClockPort for tests — now() is fixed until explicitly set or advanced, so
+// stall/heartbeat/timestamp logic is deterministic.
 
 import type { ClockPort } from "../../ports/clock.ts";
 
-/** A clock whose `now()` is fixed until explicitly set or advanced. */
 export class FixedClock implements ClockPort {
   private current: number;
 
@@ -19,12 +14,11 @@ export class FixedClock implements ClockPort {
     return this.current;
   }
 
-  /** Set the current time (epoch ms). */
   set(now: number): void {
     this.current = now;
   }
 
-  /** Advance the clock by `ms` and return the new time. */
+  // Advance the clock by `ms` and return the new time.
   advance(ms: number): number {
     this.current += ms;
     return this.current;

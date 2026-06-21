@@ -1,23 +1,13 @@
 #!/usr/bin/env bun
-/**
- * `dev3-loop` CLI entrypoint.
- *
- * Argument parsing lives in the pure {@link parseArgs} so it is unit-testable
- * without touching `process`/`Bun`.
- *
- * **Wiring status.** `run`/`dry-run` are the front door to the
- * reconcile loop: the composition root + interval runner + dry-run mode are
- * implemented and exercised against in-memory Fakes (`startReconciler` in
- * {@link module:app/loop}; see the loop tests). They cannot run end-to-end yet
- * because the **real dev-3.0 adapters** (board/runtime/git/journal) and the
- * dry-run E2E land later — so the CLI commands still report
- * "not implemented yet" while the loop core they will drive is done. `replay`
- * and `preflight` land later too.
- */
+// `dev3-loop` CLI entrypoint. Argument parsing lives in the pure parseArgs so it is unit-testable
+// without touching process/Bun. run/dry-run are the front door to the reconcile loop (the
+// composition root + interval runner + dry-run mode are implemented and tested against Fakes),
+// but can't run end-to-end until the real dev-3.0 adapters land — so they still report "not
+// implemented yet". replay works; preflight lands later.
 
-// The repo's tsconfig keeps `types: []`, so Node/Bun globals are not in scope.
-// Declare the tiny surface this file actually uses rather than pulling in
-// @types/node / @types/bun (a network install on this machine — see AGENTS.md).
+// The repo's tsconfig keeps types: [], so Node/Bun globals are not in scope. Declare the tiny
+// surface this file uses rather than pulling in @types/node / @types/bun (network install blocked
+// here — see AGENTS.md).
 declare const process: { argv: readonly string[]; exit(code?: number): never };
 declare const console: {
   log(...args: readonly unknown[]): void;
@@ -25,16 +15,14 @@ declare const console: {
 };
 declare global {
   interface ImportMeta {
-    /** Bun: true when this module is the program entrypoint. */
-    readonly main: boolean;
+    readonly main: boolean; // Bun: true when this module is the program entrypoint
   }
 }
 
-/** Subcommands the loop will eventually expose. */
 export const SUBCOMMANDS = ["run", "dry-run", "replay", "preflight"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 
-/** Pure result of {@link parseArgs}; never performs I/O. */
+// Pure result of parseArgs; never performs I/O.
 export type ParseResult =
   | { kind: "help" }
   | { kind: "version" }
@@ -42,7 +30,6 @@ export type ParseResult =
   | { kind: "none" } // no subcommand supplied
   | { kind: "unknown"; arg: string };
 
-/** Short, human-readable description of each subcommand (used in `--help`). */
 const SUBCOMMAND_HELP: Record<Subcommand, string> = {
   run: "Reconcile the board continuously (not implemented yet)",
   "dry-run": "Print the action plan without mutating anything (not implemented yet)",
@@ -50,24 +37,18 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
   preflight: "Validate the dev-3.0 store + config before running (not implemented yet)",
 };
 
-/**
- * Per-command status line printed when a subcommand is invoked. The loop core
- * `run`/`dry-run` will drive is implemented; the missing piece is the real
- * dev-3.0 adapters — so each still reports "not implemented yet" with the
- * milestone that unblocks it.
- */
+// Per-command status line printed when a subcommand is invoked — each reports "not implemented
+// yet" with the milestone that unblocks it (the loop core is done; the real adapters aren't).
 const SUBCOMMAND_STATUS: Record<Exclude<Subcommand, "replay">, string> = {
   run: "run: not implemented yet — reconcile loop is wired (app/loop startReconciler) but the real dev-3.0 adapters land in M4",
   "dry-run": "dry-run: not implemented yet — the loop's dry-run mode is implemented + tested against fakes; the E2E command lands in M7 (needs M4 adapters)",
   preflight: "preflight: not implemented yet (M4)",
 };
 
-/** Version string, single-sourced from package.json. */
 import pkg from "../package.json" with { type: "json" };
 import { replay } from "./app/replay.ts";
-export const VERSION: string = (pkg as { version: string }).version;
+export const VERSION: string = (pkg as { version: string }).version; // single-sourced from package.json
 
-/** Render the usage / help text. */
 export function usage(): string {
   const lines = [
     "dev3-loop — autonomous reconciler for dev-3.0 boards",
@@ -84,11 +65,8 @@ export function usage(): string {
   return lines.join("\n");
 }
 
-/**
- * Parse `argv` (args only — already sliced past `bun`/script) into a
- * {@link ParseResult}. Pure: it inspects the first positional token and never
- * writes output or exits.
- */
+// Parse argv (args only — already sliced past bun/script). Pure: inspects the first positional
+// token and never writes output or exits.
 export function parseArgs(argv: readonly string[]): ParseResult {
   const first = argv[0];
   if (first === undefined) return { kind: "none" };
@@ -100,17 +78,14 @@ export function parseArgs(argv: readonly string[]): ParseResult {
   return { kind: "unknown", arg: first };
 }
 
-/** Sink for CLI output; injectable so {@link run} stays testable. */
+// Sink for CLI output; injectable so run stays testable.
 export interface Io {
   out(line: string): void;
   err(line: string): void;
 }
 
-/**
- * Execute the CLI for the given args and return the process exit code. Async
- * because `replay` reads the event log; the parse-level results stay immediate.
- * Does no process-level side effects beyond writing to `io`.
- */
+// Execute the CLI for the given args and return the exit code. Async because replay reads the
+// event log. No process-level side effects beyond writing to io.
 export async function run(argv: readonly string[], io: Io): Promise<number> {
   const parsed = parseArgs(argv);
   switch (parsed.kind) {
@@ -135,12 +110,9 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   }
 }
 
-/**
- * `replay <stateDir>`: read `${stateDir}/events.ndjson` and print its timeline.
- * The state dir is the first positional after the command. Unresolved-on-crash
- * markers (an `intent` with no `done`) are surfaced on stderr but are not an error
- * — they are exactly what a crash leaves and what recovery reconciles.
- */
+// `replay <stateDir>`: read ${stateDir}/events.ndjson and print its timeline. Unresolved-on-crash
+// markers (an intent with no done) are surfaced on stderr but are not an error — they are exactly
+// what a crash leaves and what recovery reconciles.
 async function runReplay(argv: readonly string[], io: Io): Promise<number> {
   const stateDir = argv[1];
   if (stateDir === undefined) {

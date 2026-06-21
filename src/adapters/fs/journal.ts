@@ -1,36 +1,21 @@
-/**
- * Filesystem {@link JournalPort}: durable per-card bookkeeping, one JSON file per
- * card under `${stateDir}/journal/<cardId>.json`.
- *
- * **Atomic writes are the load-bearing invariant.** `persist` writes a sibling
- * `<cardId>.json.tmp` and then `rename`s it over the final path. POSIX `rename(2)`
- * is atomic, so a crash mid-write leaves either the old complete file or the new
- * complete file — **never a torn one**. The journal is the single source of truth
- * for loop state (the event log is a derived audit trace, never replayed back into
- * state), so this no-torn-file guarantee is what makes crash-recovery correct.
- *
- * @module adapters/fs/journal
- */
+// Filesystem JournalPort: durable per-card bookkeeping, one JSON file per card under
+// ${stateDir}/journal/<cardId>.json. Atomic writes are the load-bearing invariant — persist
+// writes a sibling .json.tmp and renames it over the final path. POSIX rename(2) is atomic, so a
+// crash mid-write leaves either the old or the new complete file, never a torn one. Since the
+// journal is the single source of truth for loop state, this no-torn-file guarantee is what makes
+// crash-recovery correct.
 
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import type { CardJournal } from "../../domain/types.ts";
 import type { JournalPort } from "../../ports/journal.ts";
 
-/** `.json` suffix shared by every journal file. */
 const SUFFIX = ".json";
-/** Staging suffix for the atomic write; never loaded by {@link FsJournal.loadAll}. */
-const TMP_SUFFIX = ".json.tmp";
+const TMP_SUFFIX = ".json.tmp"; // staging suffix for the atomic write; never loaded by loadAll
 
-/**
- * On-disk journal. Each card's {@link CardJournal} is one pretty-printed JSON file
- * named by its `cardId`. Construct with the **journal directory** (typically
- * `${stateDir}/journal`); the directory is created lazily on the first `persist`.
- */
+// Construct with the journal directory (typically ${stateDir}/journal); created lazily on first persist.
 export class FsJournal implements JournalPort {
-  /** Whether {@link ensureDir} has already created the journal directory this process. */
   private dirReady = false;
 
-  /** @param dir the journal directory, e.g. `${stateDir}/journal`. */
   constructor(private readonly dir: string) {}
 
   async loadAll(): Promise<Record<string, CardJournal>> {
@@ -73,7 +58,7 @@ export class FsJournal implements JournalPort {
     await rename(tmp, final);
   }
 
-  /** Create the journal directory once (idempotent; `recursive` makes parents). */
+  // Create the journal directory once (idempotent; `recursive` makes parents).
   private async ensureDir(): Promise<void> {
     if (this.dirReady) return;
     await mkdir(this.dir, { recursive: true });

@@ -1,30 +1,10 @@
-/**
- * Config boot + validation.
- *
- * Loads the global config (state dir, store path, dev3 binary, tick interval,
- * concurrency cap, daily spend ceiling, default policy) and resolves the
- * effective {@link CardPolicy} per card: **repo defaults overlaid with per-card
- * overrides**. Everything is schema-validated and **fails fast** at boot with a
- * readable {@link ConfigError}.
- *
- * The implementor and reviewer are configured independently (`policy.implementor` /
- * `policy.reviewer`) and **may share a model** — independence comes from the
- * reviewer's separate, fresh launch (`review-by-ai`), its read-only rubric prompt,
- * and re-running mechanical checks, not from the `(agent, config)`
- * pair being distinct. A different reviewer model is recommended (decorrelated
- * blind spots) but neither required nor enforced.
- *
- * **Purity boundary:** parse + validate ({@link parseGlobalConfig},
- * {@link parseCardPolicy}, {@link resolvePolicy}) are pure and exhaustively
- * unit-testable with zero I/O. The **only** file I/O is {@link FileConfig.load};
- * tests use {@link FileConfig.fromObject} (parsed object, no disk).
- *
- * The repo keeps `types: []` (no Node/Bun globals in scope), so — mirroring
- * `cli.ts` — we declare the tiny ambient surface this module actually touches
- * rather than pulling in `@types/node` / `@types/bun`.
- *
- * @module app/config
- */
+// Config boot + validation. Loads the global config and resolves the effective CardPolicy
+// per card: repo defaults overlaid with per-card overrides. Everything is schema-validated
+// and fails fast at boot with a readable ConfigError. The implementor and reviewer may share
+// a model — independence is by separate launch + read-only rubric + re-running checks, not by
+// a distinct (agent, config). Parse/validate are pure (zero I/O); the only file I/O is
+// FileConfig.load. Mirroring cli.ts, we declare the tiny Bun ambient surface rather than
+// pulling in @types/bun (the repo keeps types: []).
 
 import type { AgentSpec, Card, CardPolicy, MergePolicy } from "../domain/types.ts";
 import type { ConfigPort } from "../ports/config.ts";
@@ -33,21 +13,14 @@ declare const Bun: { file(path: string): { text(): Promise<string> } };
 
 // --- defaults -------------------------------------------------------------
 
-/** Global-config defaults applied when a field is omitted. */
 export const CONFIG_DEFAULTS = {
-  /** dev-3.0 JSON store root. */
-  dev3StorePath: "~/.dev3.0",
-  /** Path/name of the `dev3` CLI binary used to mutate the board. */
-  dev3Bin: "dev3",
-  /** Reconcile-loop period in ms. */
+  dev3StorePath: "~/.dev3.0", // dev-3.0 JSON store root
+  dev3Bin: "dev3", // `dev3` CLI binary used to mutate the board
   tickIntervalMs: 5_000,
-  /** Fleet-wide live-card cap (full policy lands later). */
-  concurrencyCap: 20,
-  /** Daily spend ceiling; `Infinity` ⇒ no ceiling (enforcement lands later). */
-  dailySpendCeiling: Number.POSITIVE_INFINITY,
+  concurrencyCap: 20, // fleet-wide live-card cap
+  dailySpendCeiling: Number.POSITIVE_INFINITY, // Infinity ⇒ no ceiling
 } as const;
 
-/** Per-card guardrail-cap defaults applied when a policy omits them. */
 export const POLICY_DEFAULTS = {
   maxConsecutiveFailures: 3,
   maxTotalAttempts: 6,
@@ -62,7 +35,7 @@ const MERGE_POLICIES: readonly MergePolicy[] = [
 
 // --- errors ---------------------------------------------------------------
 
-/** Thrown on any boot-time config validation failure; carries a readable message. */
+// Thrown on any boot-time config validation failure; carries a readable message.
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -133,11 +106,8 @@ function parseTokenBudget(v: unknown, where: string): number {
   return v;
 }
 
-/**
- * Validate a **complete** {@link CardPolicy} (the global `defaultPolicy`):
- * `merge`, `implementor`, `reviewer`, `checksCmd` are required; the guardrail caps
- * default from {@link POLICY_DEFAULTS} when omitted.
- */
+// Validate a complete CardPolicy (the global defaultPolicy): merge/implementor/reviewer/
+// checksCmd are required; the guardrail caps default from POLICY_DEFAULTS when omitted.
 export function parseCardPolicy(v: unknown, where: string): CardPolicy {
   const o = asObject(v, where);
   const implementor = parseAgentSpec(o["implementor"], `${where}.implementor`);
@@ -169,13 +139,10 @@ export function parseCardPolicy(v: unknown, where: string): CardPolicy {
     : { ...policy, tokenBudget: parseTokenBudget(tokenBudget, `${where}.tokenBudget`) };
 }
 
-/** A partial policy overlay (repo defaults or per-card overrides). */
+// A partial policy overlay (repo defaults or per-card overrides).
 export type PolicyOverrides = Partial<CardPolicy>;
 
-/**
- * Validate a **partial** policy overlay — only the fields present are checked
- * and carried over. Used for repo-level defaults and per-card overrides.
- */
+// Validate a partial policy overlay — only the fields present are checked and carried over.
 export function parsePolicyOverrides(v: unknown, where: string): PolicyOverrides {
   const o = asObject(v, where);
   const out: PolicyOverrides = {};
@@ -200,11 +167,8 @@ export function parsePolicyOverrides(v: unknown, where: string): PolicyOverrides
   return out;
 }
 
-/**
- * Overlay partial policies onto a complete base, **last writer wins**. Only keys
- * actually present in an override are applied (no key is ever cleared to
- * `undefined`), which keeps the result a complete {@link CardPolicy}.
- */
+// Overlay partial policies onto a complete base, last writer wins. Only keys present in an
+// override are applied (none is ever cleared to undefined), keeping the result complete.
 export function resolvePolicy(
   base: CardPolicy,
   ...overrides: ReadonlyArray<PolicyOverrides | undefined>
@@ -224,15 +188,11 @@ export function resolvePolicy(
   return merged;
 }
 
-/** Matches a fenced ```dev3-loop\n{json}\n``` block carrying per-card overrides. */
+// Matches a fenced ```dev3-loop\n{json}\n``` block carrying per-card overrides.
 const CARD_OVERRIDE_FENCE = /```dev3-loop\s*\n([\s\S]*?)```/;
 
-/**
- * Extract per-card policy overrides from a card's description (per-card overrides
- * from card labels/description). A card may embed a fenced
- * ```dev3-loop``` block of JSON overrides; absent ⇒ `{}`. Pure — operates on the
- * already-loaded {@link Card.prompt}.
- */
+// Extract per-card policy overrides embedded as a fenced ```dev3-loop``` JSON block in the
+// card's description; absent ⇒ {}. Pure — operates on the already-loaded Card.prompt.
 export function parseCardPolicyOverrides(card: Card): PolicyOverrides {
   const match = CARD_OVERRIDE_FENCE.exec(card.prompt);
   if (!match) return {};
@@ -249,32 +209,20 @@ export function parseCardPolicyOverrides(card: Card): PolicyOverrides {
 
 // --- global config --------------------------------------------------------
 
-/** The fully-validated global configuration. */
+// The fully-validated global configuration. Defaults are CONFIG_DEFAULTS unless noted.
 export interface GlobalConfig {
-  /** Where the journal + event log live (required; no default). */
-  stateDir: string;
-  /** dev-3.0 JSON store root (default {@link CONFIG_DEFAULTS.dev3StorePath}). */
+  stateDir: string; // where the journal + event log live (required; no default)
   dev3StorePath: string;
-  /** `dev3` CLI binary path/name (default {@link CONFIG_DEFAULTS.dev3Bin}). */
-  dev3Bin: string;
-  /** Reconcile period in ms (default {@link CONFIG_DEFAULTS.tickIntervalMs}). */
+  dev3Bin: string; // `dev3` CLI binary path/name
   tickIntervalMs: number;
-  /** Fleet live-card cap (default {@link CONFIG_DEFAULTS.concurrencyCap}). */
-  concurrencyCap: number;
-  /** Daily spend ceiling; `Infinity` ⇒ none (default {@link CONFIG_DEFAULTS.dailySpendCeiling}). */
-  dailySpendCeiling: number;
-  /** Baseline policy every card inherits before repo/card overrides. */
-  defaultPolicy: CardPolicy;
-  /** Per-repo (`owner/name`) policy overlays applied before per-card overrides. */
-  repoPolicies: Record<string, PolicyOverrides>;
+  concurrencyCap: number; // fleet live-card cap
+  dailySpendCeiling: number; // Infinity ⇒ none
+  defaultPolicy: CardPolicy; // baseline every card inherits before repo/card overrides
+  repoPolicies: Record<string, PolicyOverrides>; // per-repo (owner/name) overlays, applied before per-card
 }
 
-/**
- * Validate a raw (already-JSON-parsed) global-config object. Fills defaults,
- * **fails fast** with a readable {@link ConfigError} on any schema violation, and
- * runs the implementor≠reviewer assertion against the default policy **and** every
- * repo-resolved policy. Pure — no I/O.
- */
+// Validate a raw (already-JSON-parsed) global-config object. Fills defaults, fails fast with
+// a readable ConfigError on any schema violation. Pure — no I/O.
 export function parseGlobalConfig(raw: unknown): GlobalConfig {
   const o = asObject(raw, "config");
 
@@ -316,25 +264,18 @@ export function parseGlobalConfig(raw: unknown): GlobalConfig {
 
 // --- the ConfigPort boundary ----------------------------------------------
 
-/**
- * File-backed {@link ConfigPort}. Resolves each card's policy as
- * `defaultPolicy ⊕ repoPolicies[card.repo] ⊕ cardOverrides`.
- *
- * Construct via {@link FileConfig.load} (reads a JSON file — the only I/O here)
- * or {@link FileConfig.fromObject} (already-parsed object, no disk).
- */
+// File-backed ConfigPort. Resolves each card's policy as
+// defaultPolicy ⊕ repoPolicies[card.repo] ⊕ cardOverrides. Construct via load (reads a JSON
+// file — the only I/O here) or fromObject (already-parsed object, no disk).
 export class FileConfig implements ConfigPort {
-  private constructor(
-    /** The validated global config. */
-    readonly global: GlobalConfig,
-  ) {}
+  private constructor(readonly global: GlobalConfig) {}
 
-  /** Build from an already-parsed object (no file I/O). */
+  // Build from an already-parsed object (no file I/O).
   static fromObject(raw: unknown): FileConfig {
     return new FileConfig(parseGlobalConfig(raw));
   }
 
-  /** Read + parse a JSON config file at `path`. The only file I/O in this module. */
+  // Read + parse a JSON config file at `path`. The only file I/O in this module.
   static async load(path: string): Promise<FileConfig> {
     let text: string;
     try {

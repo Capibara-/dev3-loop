@@ -1,11 +1,5 @@
-/**
- * Barrel for the dev3-loop ports & DTOs.
- *
- * Ports import **only** domain types and these DTOs — never an adapter. The
- * domain core depends on these interfaces; adapters implement them.
- *
- * @module ports
- */
+// Barrel for the ports & DTOs. Ports import only domain types and these DTOs — never an
+// adapter. The domain core depends on these interfaces; adapters implement them.
 
 export type { BoardPort } from "./board.ts";
 export type { RuntimePort } from "./runtime.ts";

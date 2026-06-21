@@ -1,18 +1,11 @@
-/**
- * In-memory {@link JournalPort} for tests. Backed by a `Map`;
- * clones on persist and load so a stored journal cannot be mutated through a
- * reference the test still holds (mirrors the real adapter's tmp+rename write).
- *
- * @module adapters/fake/journal
- */
+// In-memory JournalPort for tests. Clones on persist and load so a stored journal can't be
+// mutated through a reference the test still holds (mirrors the real adapter's tmp+rename write).
 
 import type { CardJournal } from "../../domain/types.ts";
 import type { JournalPort } from "../../ports/journal.ts";
 
-/** Structured deep clone via JSON (CardJournal is plain data — no functions/dates). */
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-/** In-memory journal store keyed by `cardId`. */
 export class FakeJournal implements JournalPort {
   private store = new Map<string, CardJournal>();
 

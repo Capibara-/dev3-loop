@@ -1,34 +1,21 @@
-/**
- * In-memory {@link RuntimePort} for tests. Scriptable per-card
- * `result.json`/`review.json`, liveness, and pane captures; records every launch
- * and fix-prompt so tests can assert what the reconciler drove — with no tmux,
- * worktree, or real agent.
- *
- * @module adapters/fake/runtime
- */
+// In-memory RuntimePort for tests. Scriptable per-card result.json/review.json, liveness, and
+// pane captures; records every launch and fix-prompt so tests can assert what the reconciler
+// drove — with no tmux, worktree, or real agent. All reads default to "nothing yet"; use the
+// set* helpers to script a card's state before a tick.
 
 import type { AgentSpec, Card } from "../../domain/types.ts";
 import type { Review, ImplementorResult } from "../../ports/dto.ts";
 import type { RuntimePort } from "../../ports/runtime.ts";
 
-/** A recorded launch / fix-prompt call. */
 export interface RuntimeCall {
   cardId: string;
   spec?: AgentSpec;
   prompt?: string;
 }
 
-/**
- * In-memory runtime. All reads default to "nothing yet" (`readResult`/
- * `readReview` → `null`, `isAlive` → `false`, `capture` → `null`); use the
- * `set*` helpers to script a card's state before a tick.
- */
 export class FakeRuntime implements RuntimePort {
-  /** Every `launchProducer` call, in order. */
   readonly producerLaunches: RuntimeCall[] = [];
-  /** Every `launchGrader` call, in order. */
   readonly graderLaunches: RuntimeCall[] = [];
-  /** Every `sendFixPrompt` call, in order. */
   readonly fixPrompts: RuntimeCall[] = [];
 
   private results = new Map<string, ImplementorResult>();
@@ -36,22 +23,18 @@ export class FakeRuntime implements RuntimePort {
   private alive = new Map<string, boolean>();
   private captures = new Map<string, string>();
 
-  /** Script the implementor's `result.json` for a card. */
   setResult(cardId: string, result: ImplementorResult): void {
     this.results.set(cardId, result);
   }
 
-  /** Script the reviewer's `review.json` for a card. */
   setReview(cardId: string, review: Review): void {
     this.reviews.set(cardId, review);
   }
 
-  /** Script whether a card's session is alive. */
   setAlive(cardId: string, alive: boolean): void {
     this.alive.set(cardId, alive);
   }
 
-  /** Script the pane capture text for a card. */
   setCapture(cardId: string, text: string): void {
     this.captures.set(cardId, text);
   }
