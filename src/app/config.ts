@@ -454,13 +454,14 @@ export class FileConfig implements ConfigPort {
   private constructor(
     /** The validated global config. */
     readonly global: GlobalConfig,
+    private readonly logger: ConfigLogger,
   ) {}
 
   /** Build from an already-parsed object (no file I/O); emits warnings via `logger`. */
   static fromObject(raw: unknown, logger: ConfigLogger = DEFAULT_LOGGER): FileConfig {
     const { config, warnings } = parseGlobalConfig(raw);
     for (const w of warnings) logger.warn(w);
-    return new FileConfig(config);
+    return new FileConfig(config, logger);
   }
 
   /** Read + parse a JSON config file at `path`. The only file I/O in this module. */
@@ -486,7 +487,8 @@ export class FileConfig implements ConfigPort {
     const repoOverride = this.global.repoPolicies[card.repo];
     const cardOverride = parseCardPolicyOverrides(card);
     const resolved = resolvePolicy(this.global.defaultPolicy, repoOverride, cardOverride);
-    assertDistinctAgents(resolved.producer, resolved.grader, `resolved policy for card ${card.id}`);
+    const warn = assertDistinctAgents(resolved.producer, resolved.grader, `resolved policy for card ${card.id}`);
+    if (warn) this.logger.warn(warn);
     return resolved;
   }
 }

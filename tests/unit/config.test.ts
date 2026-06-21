@@ -224,6 +224,23 @@ describe("policyFor resolution (repo defaults then card overrides)", () => {
     });
     await expect(cfg.policyFor(card)).rejects.toThrow(/must differ/);
   });
+
+  test("a card override that introduces same-model pairing ⇒ warns via logger", async () => {
+    const log = recorder();
+    const cfg = FileConfig.fromObject(rawConfig(), log);
+    log.messages.length = 0; // clear boot-time messages
+    const card = mkCard({
+      prompt: [
+        "```dev3-loop",
+        // override grader to a permission-suffix variant of the same model (opus-4.8)
+        JSON.stringify({ grader: { agent: "builtin-claude", config: "claude-default-opus48-auto" } }),
+        "```",
+      ].join("\n"),
+    });
+    await cfg.policyFor(card);
+    expect(log.messages).toHaveLength(1);
+    expect(log.messages[0]).toMatch(/same model/);
+  });
 });
 
 // --- resolvePolicy unit ---------------------------------------------------
