@@ -1,32 +1,12 @@
-/**
- * The journal seam: durable per-card bookkeeping. The orchestrator holds no
- * essential state in RAM — counters, attempt history, spend, and write-ahead
- * markers all live here so a crash + restart resumes correctly.
- *
- * @module ports/journal
- */
+// The journal seam: durable per-card bookkeeping — the single source of truth for state. The
+// orchestrator holds no essential state in RAM; counters, attempt history, spend, and
+// write-ahead markers all live here so a crash + restart resumes correctly. (NOT rebuilt from
+// the event log; the log is an audit trace only.) One JSON file per card under
+// ${stateDir}/journal/<cardId>.json.
 
 import type { CardJournal } from "../domain/types.ts";
 
-/**
- * Persists and loads {@link CardJournal}s (one JSON file per card under
- * `${stateDir}/journal/<cardId>.json`). The journal is a derived projection of
- * the event log and may be rebuilt from it.
- */
 export interface JournalPort {
-  /**
-   * Load every card's journal, keyed by `cardId`. Called once per reconcile tick
-   * to pair durable bookkeeping with the observed board state.
-   *
-   * @returns a map of `cardId → CardJournal` (empty map when none exist yet).
-   */
-  loadAll(): Promise<Record<string, CardJournal>>;
-
-  /**
-   * Persist one card's journal with an **atomic** write (write tmp file, then
-   * `rename`) so a crash never leaves a torn file.
-   *
-   * @param j the journal to write (replaces the prior one for `j.cardId`).
-   */
-  persist(j: CardJournal): Promise<void>;
+  loadAll(): Promise<Record<string, CardJournal>>; // cardId → CardJournal (empty when none exist yet); called once per tick
+  persist(j: CardJournal): Promise<void>; // atomic write (tmp + rename) so a crash never leaves a torn file
 }

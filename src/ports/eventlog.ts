@@ -1,24 +1,11 @@
-/**
- * The event-log seam: the append-only, replayable spine of the system. Every
- * intent/done pair, lane move, and guardrail trip is recorded here; the journal
- * is a projection rebuildable from it.
- *
- * @module ports/eventlog
- */
+// The event-log seam: the append-only audit/observability trace (${stateDir}/events.ndjson,
+// one JSON object per line). Powers `replay`; NOT a source of truth — the journal is
+// authoritative and is not rebuilt from this.
 
 import type { LoopEvent } from "./dto.ts";
 
-/**
- * Appends {@link LoopEvent}s to the durable, append-only log
- * (`${stateDir}/events.ndjson`, one JSON object per line).
- */
 export interface EventLogPort {
-  /**
-   * Append a single event. Must durably persist before the corresponding effect
-   * is treated as recorded — `intent` is written **before** an effectful action
-   * runs (write-ahead), `done` **after** it succeeds.
-   *
-   * @param event the event to append.
-   */
+  // intent is written BEFORE an effectful action runs (write-ahead), done after it succeeds;
+  // each must durably persist before the effect is treated as recorded.
   append(event: LoopEvent): Promise<void>;
 }

@@ -1,45 +1,16 @@
-/**
- * Composition root + reconcile tick loop.
- *
- * This is the **imperative shell** around the pure {@link decide} core. It wires
- * the seven ports (Fakes in tests, real adapters) into a {@link Loop} and
- * drives the level-triggered reconcile:
- *
- * ```
- * tick():
- *   cards   = board.listCards()
- *   journal = journal.loadAll()
- *   slots   = promotionBudget(cards, journal)   // computed ONCE, consumed sequentially
- *   for card in cards:
- *     obs     = observe(card)                    // cheap, side-effect-free reads
- *     actions = decide(card, journal[card.id], policy, obs, now)   // PURE → ordered Action[]
- *     for a in actions:                          // [] = NoOp
- *       if a is a promotion and slots <= 0: skip the rest of this card (fleet gate)
- *       eventLog.append(intent(a))               // write-ahead, per action
- *       journal = fold(execute(a) into journal)  // the only I/O
- *       if a is a promotion: slots -= 1
- *       journal.persist(journal); eventLog.append(done(a))
- * ```
- *
- * Three load-bearing invariants:
- *  - **The fleet promotion gate lives HERE, not in `decide()`**: a
- *    per-card boolean would race, so the budget is a counter the shell spends
- *    sequentially. It currently ships as a SEAM with a trivial concurrency budget
- *    ({@link concurrencyBudget}); the full caps/breaker policy lands later.
- *  - **The shell folds every evaluation into an `AttemptRecord`** — both
- *    `RunChecks` results AND reviewer `changes_requested` verdicts (the latter as a
- *    **red** attempt that feeds `consecutiveFailures` + the breaker), and it
- *    sets `fixPromptSent` whenever it dispatches a `SendFixPrompt`, giving
- *    exactly-once fix delivery.
- *  - **The journal is the single source of truth**; the event log is an
- *    append-only audit trace, never replayed into state.
- *
- * `dry-run` mode computes `observe()`/`decide()` (side-effect-free reads only) and
- * returns the intended {@link PlannedAction}s **without** performing a single port
- * mutation — no moves, launches, checks, merges, journal writes, or log appends.
- *
- * @module app/loop
- */
+// Composition root + reconcile tick loop — the imperative shell around the pure decide()
+// core. Wires the seven ports (Fakes in tests, real adapters) into a Loop and drives the
+// level-triggered reconcile. Three load-bearing invariants:
+//  - The fleet promotion gate lives HERE, not in decide(): a per-card boolean would race,
+//    so the budget is a counter the shell spends sequentially across cards.
+//  - The shell folds every evaluation into an AttemptRecord — both RunChecks results and
+//    reviewer changes_requested verdicts (the latter as a red attempt feeding
+//    consecutiveFailures + the breaker), setting fixPromptSent on each SendFixPrompt for
+//    exactly-once fix delivery.
+//  - The journal is the single source of truth; the event log is an append-only audit
+//    trace, never replayed into state.
+// dry-run computes observe()/decide() (reads only) and returns the intended actions
+// without a single port mutation.
 
 import {
   applyHumanResume,
@@ -72,7 +43,7 @@ import type { CheckResult, LoopEvent, Observation } from "../ports/dto.ts";
 
 // --- port bundle ----------------------------------------------------------
 
-/** The seven seams the shell drives. Fakes in tests, real adapters in production. */
+// The seven seams the shell drives. Fakes in tests, real adapters in production.
 export interface LoopPorts {
   board: BoardPort;
   runtime: RuntimePort;
@@ -85,37 +56,30 @@ export interface LoopPorts {
 
 // --- fleet promotion gate (seam) ------------------------------------------
 
-/**
- * The fleet promotion budget: how many `todo` cards may be
- * promoted to `in-progress` this tick. Computed ONCE per tick over the full card
- * list and **consumed sequentially** by the shell — never a per-card field (that
- * would race). It currently ships {@link concurrencyBudget}; the daily-spend
- * ceiling + circuit breaker land later.
- */
+// How many todo cards may be promoted to in-progress this tick. Computed once per tick
+// over the full card list and consumed sequentially by the shell — never a per-card field
+// (that would race).
 export type PromotionBudget = (
   cards: readonly Card[],
   journals: Readonly<Record<string, CardJournal>>,
 ) => number;
 
-/** Concurrency-only budget (`cap − live`); a `promotionBudget` override / seam. The
- *  full policy (+ spend ceiling + breaker) is {@link evaluateFleet}, the loop default. */
+// Concurrency-only budget (cap − live); a promotionBudget override. The full policy
+// (+ spend ceiling + breaker) is evaluateFleet, the loop default.
 export function concurrencyBudget(cap: number): PromotionBudget {
   return (cards, journals) => Math.max(0, cap - liveCount(cards, journals));
 }
 
 // --- the loop -------------------------------------------------------------
 
-/** A single intended effect surfaced by a tick (for dry-run logging / assertions). */
+// A single intended effect surfaced by a tick (for dry-run logging / assertions).
 export interface PlannedAction {
-  /** The card the action concerns. */
   cardId: string;
-  /** The {@link Action} `decide()` proposed (and that the shell executed, unless dry-run / gated). */
-  action: Action;
-  /** True when the fleet gate held this promotion back this tick (dry-run plan only). */
-  gated?: boolean;
+  action: Action; // what decide() proposed (and the shell executed, unless dry-run / gated)
+  gated?: boolean; // true when the fleet gate held this promotion back (dry-run plan only)
 }
 
-/** Defaults for the fleet policy knobs, applied when {@link LoopConfig} omits them. */
+// Defaults for the fleet policy knobs, applied when LoopConfig omits them.
 export const FLEET_DEFAULTS = {
   dailySpendCeiling: Number.POSITIVE_INFINITY,
   breakerWindow: 10,
@@ -124,16 +88,12 @@ export const FLEET_DEFAULTS = {
   spendWindowMs: 86_400_000, // 24h
 } as const;
 
-/** Knobs for {@link createLoop}. */
+// Knobs for createLoop.
 export interface LoopConfig {
-  /** Fleet live-card concurrency cap. */
-  concurrencyCap: number;
-  /** When true, compute the plan but perform ZERO port mutations. */
-  dryRun?: boolean;
-  /** Concurrency-only budget override; bypasses the full {@link evaluateFleet} policy. */
-  promotionBudget?: PromotionBudget;
-  /** Guardrail give-up predicate; defaults to the real {@link guardrails}. */
-  shouldGiveUp?: GiveUpPredicate;
+  concurrencyCap: number; // fleet live-card concurrency cap
+  dryRun?: boolean; // compute the plan but perform ZERO port mutations
+  promotionBudget?: PromotionBudget; // concurrency-only override; bypasses evaluateFleet
+  shouldGiveUp?: GiveUpPredicate; // defaults to the real guardrails
   // Fleet-policy overrides; each falls back to FLEET_DEFAULTS.
   dailySpendCeiling?: number;
   breakerWindow?: number;
@@ -142,21 +102,16 @@ export interface LoopConfig {
   spendWindowMs?: number;
 }
 
-/** The reconciler: one {@link Loop.tick} = one full level-triggered reconcile. */
+// One Loop.tick = one full level-triggered reconcile (actions executed unless dry-run).
 export interface Loop {
-  /** Run one reconcile pass; returns the intended actions (executed unless dry-run). */
   tick(): Promise<PlannedAction[]>;
 }
 
-/** The empty observation handed to `decide()` for lane-gated (terminal/`todo`) cards. */
+// Handed to decide() for lane-gated (terminal/todo) cards we don't observe.
 const EMPTY_OBS: Observation = { result: null, review: null, alive: false, merged: false };
 
-/**
- * Construct the reconcile loop from injected ports. This is the **composition
- * root** — the only place the shell knows the concrete ports; everything below is
- * driven through the port interfaces, so the same loop runs against Fakes (tests)
- * or real adapters with no change.
- */
+// Construct the reconcile loop from injected ports — the composition root. Everything below
+// is driven through the port interfaces, so the same loop runs against Fakes or real adapters.
 export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
   const dryRun = config.dryRun ?? false;
   const shouldGiveUp = config.shouldGiveUp ?? guardrails;
@@ -173,7 +128,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
   // one extra audit line, never correctness (budget is recomputed every tick).
   let breakerWasOpen = false;
 
-  /** Gather the cheap, side-effect-free {@link Observation} for a card. */
+  // Gather the cheap, side-effect-free Observation for a card.
   async function observe(card: Card): Promise<Observation> {
     const [result, review, alive, merged, diff] = await Promise.all([
       ports.runtime.readResult(card),
@@ -188,10 +143,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
     return obs;
   }
 
-  /**
-   * Perform one action's effect and fold its result into the working journal.
-   * Returns the (possibly new) journal; never mutates the input in place.
-   */
+  // Perform one action's effect and fold its result into a new journal (never mutates input).
   async function applyAction(
     action: Action,
     card: Card,
@@ -342,26 +294,17 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
 
 // --- interval runner ------------------------------------------------------
 
-/** Options for {@link runLoop} — the level-triggered interval driver. */
+// Options for runLoop — the level-triggered interval driver.
 export interface RunnerOptions {
-  /** Period between ticks, in ms (passed to {@link RunnerOptions.sleep}). */
-  intervalMs: number;
-  /** Injected sleep so the runner is testable without real timers. */
-  sleep: (ms: number) => Promise<void>;
-  /** Stop after this many ticks (tests / bounded runs); unbounded when omitted. */
-  maxTicks?: number;
-  /** Polled before each tick + before each sleep; return true to stop the loop. */
-  shouldStop?: () => boolean;
-  /** Called after every tick with that tick's plan (e.g. dry-run logging). */
-  onTick?: (planned: PlannedAction[], tickNumber: number) => void;
+  intervalMs: number; // period between ticks
+  sleep: (ms: number) => Promise<void>; // injected so the runner is testable without real timers
+  maxTicks?: number; // stop after this many ticks (tests / bounded runs); unbounded when omitted
+  shouldStop?: () => boolean; // polled before each tick + before each sleep; true ⇒ stop
+  onTick?: (planned: PlannedAction[], tickNumber: number) => void; // e.g. dry-run logging
 }
 
-/**
- * Drive {@link Loop.tick} on an interval. Level-triggered: every tick is
- * a full reconcile that re-derives all actions from durable state, so a missed
- * wake-up never causes divergence. The clock/sleep are injected so this is fully
- * testable without real timers. Returns the number of ticks executed.
- */
+// Drive Loop.tick on an interval. Level-triggered: every tick re-derives all actions from
+// durable state, so a missed wake-up never causes divergence. Returns the ticks executed.
 export async function runLoop(loop: Loop, opts: RunnerOptions): Promise<number> {
   let ticks = 0;
   while (true) {
@@ -379,12 +322,9 @@ export async function runLoop(loop: Loop, opts: RunnerOptions): Promise<number> 
   return ticks;
 }
 
-/**
- * The named composition entrypoint the CLI's `run`/`dry-run` will call once the
- * real adapters land: build the loop from injected ports and drive it on an
- * interval, logging the intended actions each tick in dry-run. Kept here (not in
- * `cli.ts`) so the wiring is one swap-in away from real I/O.
- */
+// The named composition entrypoint the CLI's run/dry-run calls once the real adapters land:
+// build the loop from injected ports and drive it on an interval. Kept here (not cli.ts) so
+// the wiring is one swap-in away from real I/O.
 export async function startReconciler(
   ports: LoopPorts,
   config: LoopConfig & { intervalMs: number },
@@ -424,46 +364,35 @@ export async function startReconciler(
 
 // --- pure helpers ---------------------------------------------------------
 
-/**
- * Lane-gating: only cards being actively worked need the full cheap-read
- * snapshot. `todo` / observe-only terminal / journaled-terminal cards route off
- * the key alone, so we skip the reads (and never blind-probe tmux).
- */
+// Lane-gating: only actively-worked cards need the cheap-read snapshot. todo / observe-only
+// terminal / journaled-terminal cards route off the key alone, so skip the reads (and never
+// blind-probe tmux).
 function needsObservation(key: Lane | CustomColumnId, journal: CardJournal): boolean {
   if (journal.terminal !== undefined) return false;
   return key !== "todo" && key !== "completed" && key !== "cancelled";
 }
 
-/**
- * A promotion = the `MoveLane → in-progress` emitted for a `todo` card (its
- * `expect` is `todo`). This is the only move the fleet gate counts; an
- * active→active re-entry (reviewer bounce, `expect` = a review lane) is not.
- */
+// A promotion = the MoveLane → in-progress emitted for a todo card (expect === "todo"). The
+// only move the fleet gate counts; an active→active re-entry (reviewer bounce) is not.
 function isPromotion(action: Action): boolean {
   return action.kind === "MoveLane" && action.to === "in-progress" && action.expect === "todo";
 }
 
-/** A fresh, never-attempted journal for a card the loadAll() snapshot didn't have. */
 function freshJournal(cardId: string): CardJournal {
   return { cardId, attempts: [], consecutiveFailures: 0, totalTokens: 0, pending: {} };
 }
 
-/**
- * The irreversible, exactly-once effects: a botched retry can't be undone, so they
- * get a journal-side write-ahead `pending` marker and a recovery reality-check.
- * `MoveLane`/`RunChecks`/`SendFixPrompt`/launches are safe to repeat (CAS-guarded
- * or idempotent), so they don't.
- */
+// The irreversible, exactly-once effects: a botched retry can't be undone, so they get a
+// journal-side write-ahead pending marker + a recovery reality-check. Everything else is
+// CAS-guarded or idempotent and needs none.
 function isIrreversible(action: Action): boolean {
   return action.kind === "Merge" || action.kind === "OpenPr";
 }
 
-/** Add a write-ahead `pending` marker (new journal; never mutates the input). */
 function withPending(journal: CardJournal, actionId: string, kind: string, now: number): CardJournal {
   return { ...journal, pending: { ...journal.pending, [actionId]: { kind, startedAt: now } } };
 }
 
-/** Clear a resolved write-ahead marker (new journal; no-op if it's already gone). */
 function clearPending(journal: CardJournal, actionId: string): CardJournal {
   if (!(actionId in journal.pending)) return journal;
   const pending = { ...journal.pending };
@@ -471,10 +400,7 @@ function clearPending(journal: CardJournal, actionId: string): CardJournal {
   return { ...journal, pending };
 }
 
-/**
- * Build a {@link LoopEvent}, attaching `detail` only when present (the schema uses
- * `exactOptionalPropertyTypes`, so an explicit `undefined` is not allowed).
- */
+// Build a LoopEvent, attaching detail only when present (exactOptionalPropertyTypes).
 function mkEvent(
   type: "intent" | "done",
   ts: number,
@@ -488,7 +414,7 @@ function mkEvent(
   return event;
 }
 
-/** Sentinel cardId for fleet-wide events (LoopEvent.cardId is required). */
+// Sentinel cardId for fleet-wide events (LoopEvent.cardId is required).
 const FLEET_CARD_ID = "*fleet*";
 
 function breakerEvent(now: number, decision: FleetDecision): LoopEvent {
@@ -500,13 +426,9 @@ function breakerEvent(now: number, decision: FleetDecision): LoopEvent {
   };
 }
 
-/**
- * Structured detail for the audit trace. We keep a single `intent`/`done` event
- * stream (no dedicated `lane_move`/`guardrail_trip` records) and let `replay`
- * classify by `action` kind — so a `MoveLane` event carries its target/guard and a
- * `GiveUp` event carries its reason, which is all the timeline needs to render
- * lane moves and guardrail trips.
- */
+// Structured detail for the audit trace. A single intent/done event stream (no dedicated
+// lane_move/guardrail_trip records) — replay classifies by action kind, so a MoveLane event
+// carries its target/guard and a GiveUp event carries its reason.
 function eventDetail(action: Action): Record<string, unknown> | undefined {
   switch (action.kind) {
     case "MoveLane": {
@@ -522,12 +444,9 @@ function eventDetail(action: Action): Record<string, unknown> | undefined {
   }
 }
 
-/**
- * Fold a `RunChecks` {@link CheckResult} into a new {@link AttemptRecord} (happy
- * path). Green resets `consecutiveFailures`; red increments it (feeding the
- * caps the next tick reads back). The diff hash is recorded for edge-detection
- * + oscillation; the failure signature (best-effort) for no-progress detection.
- */
+// Fold a RunChecks result into a new AttemptRecord. Green resets consecutiveFailures, red
+// increments it (feeding the caps the next tick reads back). diffHash → edge-detection +
+// oscillation; failureSignature (best-effort) → no-progress detection.
 function foldCheck(
   journal: CardJournal,
   result: CheckResult,
@@ -551,15 +470,12 @@ function foldCheck(
   };
 }
 
-/**
- * Fold a `SendFixPrompt` dispatch. Two shapes, distinguished by the journal:
- *  - **mechanical-red path** — the red attempt already exists (a prior `RunChecks`
- *    folded it); we just set `fixPromptSent` on it (exactly-once delivery).
- *  - **reviewer-rejection bounce** — the head's last attempt is *green* (it passed
- *    checks), so a `changes_requested` verdict is a NEW failure: fold a fresh
- *    **red** attempt (it feeds `consecutiveFailures` + the breaker) with
- *    `fixPromptSent` already set.
- */
+// Fold a SendFixPrompt dispatch. Two shapes, distinguished by the journal:
+//  - mechanical-red path — the red attempt already exists (a prior RunChecks folded it); just
+//    set fixPromptSent on it (exactly-once delivery).
+//  - reviewer-rejection bounce — the head's last attempt is green (passed checks), so a
+//    changes_requested verdict is a NEW failure: fold a fresh red attempt (feeds
+//    consecutiveFailures + breaker) with fixPromptSent already set.
 function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): CardJournal {
   const last = journal.attempts[journal.attempts.length - 1];
   if (last && last.outcome === "red" && last.fixPromptSent !== true) {
@@ -585,12 +501,12 @@ function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): Car
   };
 }
 
-/** The reviewer's launch input (placeholder; the adversarial rubric lands later). */
+// The reviewer's launch input (placeholder; the adversarial rubric lands later).
 function graderPrompt(card: Card): string {
   return card.acceptanceCriteria.length > 0 ? card.acceptanceCriteria.join("\n") : card.prompt;
 }
 
-/** Human-facing diagnostic attached to the board on give-up. */
+// Human-facing diagnostic attached to the board on give-up.
 function giveUpNote(reason: string, journal: CardJournal): string {
   return (
     `dev3-loop gave up: ${reason} ` +
@@ -598,7 +514,7 @@ function giveUpNote(reason: string, journal: CardJournal): string {
   );
 }
 
-/** One-line human description of an action (dry-run logging). */
+// One-line human description of an action (dry-run logging).
 function describeAction(action: Action): string {
   switch (action.kind) {
     case "MoveLane":
@@ -610,10 +526,8 @@ function describeAction(action: Action): string {
   }
 }
 
-/**
- * Stable 32-bit FNV-1a hash, hex. Used for the diff hash (edge-detection +
- * oscillation) and the failure signature. Deterministic and dependency-free.
- */
+// Stable 32-bit FNV-1a hash, hex — the diff hash and failure signature. Deterministic,
+// dependency-free.
 function hashString(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -623,13 +537,13 @@ function hashString(s: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** Default real sleep for the interval runner (replaced by an injected sleep in tests). */
+// Default real sleep for the interval runner (replaced by an injected sleep in tests).
 declare const setTimeout: (cb: () => void, ms: number) => unknown;
 function defaultSleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-/** Exhaustiveness guard: a `never` here means an {@link Action} variant is unhandled. */
+// Exhaustiveness guard: a `never` here means an Action variant is unhandled.
 function assertNever(x: never): never {
   throw new Error(`unreachable action: ${JSON.stringify(x)}`);
 }

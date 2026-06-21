@@ -1,33 +1,18 @@
-/**
- * Startup recovery: reconcile write-ahead `pending` markers left by a crash.
- *
- * Every irreversible effect (`Merge`/`OpenPr`) persists a `journal.pending[
- * actionId]` marker **before** it runs and clears it **after** it succeeds (see
- * `app/loop.ts`). A crash between those two points leaves a dangling marker. On the
- * next boot — before the first tick — {@link recover} walks every journal's
- * pending set and **verifies reality**:
- *
- *  - `Merge`  → ask `git.isMerged` (content/PR-aware, squash-safe). Merged ⇒ the
- *    effect actually completed: set `terminal:"merged"`, clear the marker, and
- *    close the dangling `intent` with a `done{recovered}` audit record. Not merged
- *    ⇒ just clear the marker and let the level-triggered loop re-derive (the merge
- *    is idempotent + CAS-guarded, so re-emitting it is safe and **not** a blind
- *    retry of a half-done write).
- *  - `OpenPr` → clear the marker and let the level-triggered loop re-derive on the
- *    next tick. `openPr` is idempotent (`alreadyExisted`), so re-emitting it at most
- *    opens one PR and has no harmful side-effects — no reality-check needed here.
- *
- * **Never blind-retry.** Recovery only ever *reads* to decide; it re-initiates
- * nothing itself. The journal is the source of truth — the event log is an audit
- * trace and is never replayed into state.
- *
- * @module app/recover
- */
+// Startup recovery: reconcile write-ahead `pending` markers left by a crash. Every irreversible
+// effect (Merge/OpenPr) persists a journal.pending[actionId] marker before it runs and clears it
+// after it succeeds (see loop.ts); a crash between those points leaves a dangling marker. On the
+// next boot — before the first tick — recover() walks every journal's pending set and verifies
+// reality. Never blind-retry: recovery only reads to decide, and re-initiates nothing itself —
+// the level-triggered loop re-derives the work, relying on each effect's idempotency/CAS guard.
+//  - Merge  → probe git.isMerged (content/PR-aware). Merged ⇒ the push completed: set
+//    terminal:"merged". Not merged ⇒ clear the marker and let the loop re-derive.
+//  - OpenPr → clear the marker and re-derive; openPr is idempotent (alreadyExisted), so no
+//    reality-check is needed.
 
 import type { Card, CardJournal } from "../domain/types.ts";
 import type { BoardPort, EventLogPort, GitPort, JournalPort } from "../ports/index.ts";
 
-/** The ports recovery needs: the journal it reconciles + the reality it checks against. */
+// The journal recovery reconciles + the reality it checks against.
 export interface RecoverPorts {
   board: BoardPort;
   git: GitPort;
@@ -36,25 +21,20 @@ export interface RecoverPorts {
   clock: { now(): number };
 }
 
-/** What a single resolved pending marker did, for logging + test assertions. */
 export interface RecoveredMarker {
   cardId: string;
   actionId: string;
   kind: string;
-  /** `merged`/`pr_exists` ⇒ the effect had completed; `reconciled` ⇒ it had not (re-derive); `orphaned` ⇒ no live card. */
+  // merged/pr_exists ⇒ the effect had completed; reconciled ⇒ it hadn't (re-derive); orphaned ⇒ no live card.
   resolution: "merged" | "pr_exists" | "reconciled" | "orphaned";
 }
 
-/** Summary of a recovery pass. */
 export interface RecoveryReport {
-  /** Markers found and resolved (empty ⇒ clean shutdown / nothing in flight). */
-  recovered: RecoveredMarker[];
+  recovered: RecoveredMarker[]; // markers found and resolved (empty ⇒ clean shutdown / nothing in flight)
 }
 
-/**
- * Reconcile all dangling write-ahead markers. Idempotent: a second run over an
- * already-clean journal set is a no-op. Returns a {@link RecoveryReport}.
- */
+// Reconcile all dangling write-ahead markers. Idempotent: a second run over an already-clean
+// journal set is a no-op.
 export async function recover(ports: RecoverPorts): Promise<RecoveryReport> {
   const journals = await ports.journal.loadAll();
   const cardsById = await indexCards(ports.board);
@@ -92,7 +72,7 @@ export async function recover(ports: RecoverPorts): Promise<RecoveryReport> {
   return { recovered };
 }
 
-/** Verify reality for one marker; returns how it resolved + any terminal to set. */
+// Verify reality for one marker; returns how it resolved + any terminal to set.
 async function resolveMarker(
   ports: RecoverPorts,
   card: Card | undefined,
@@ -115,7 +95,7 @@ async function resolveMarker(
   return { resolution: "reconciled" };
 }
 
-/** Build a `cardId → Card` index from the board (recovery needs the Card to probe git). */
+// Build a cardId → Card index (recovery needs the Card to probe git).
 async function indexCards(board: BoardPort): Promise<Map<string, Card>> {
   const cards = await board.listCards();
   const map = new Map<string, Card>();
@@ -123,7 +103,7 @@ async function indexCards(board: BoardPort): Promise<Map<string, Card>> {
   return map;
 }
 
-/** Clear a resolved marker (new journal; no-op if already gone). Mirrors loop.ts. */
+// Clear a resolved marker (new journal; no-op if already gone). Mirrors loop.ts.
 function clearPending(journal: CardJournal, actionId: string): CardJournal {
   if (!(actionId in journal.pending)) return journal;
   const pending = { ...journal.pending };

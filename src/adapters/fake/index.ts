@@ -1,9 +1,5 @@
-/**
- * Barrel for the in-memory `Fake*` adapters. These are the **only**
- * way the pure core is exercised — no tmux, git, dev-3.0, or fs I/O.
- *
- * @module adapters/fake
- */
+// Barrel for the in-memory Fake* adapters — how the pure core is exercised in tests, with no
+// tmux, git, dev-3.0, or fs I/O.
 
 export { FakeBoard } from "./board.ts";
 export type { MoveRecord, NoteRecord, OverviewRecord } from "./board.ts";

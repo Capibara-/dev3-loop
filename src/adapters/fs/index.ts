@@ -1,11 +1,5 @@
-/**
- * Barrel for the filesystem adapters: the durable side of the loop
- * (`${stateDir}/journal/<cardId>.json` + `${stateDir}/events.ndjson`) plus the
- * wall-clock. These are the persistence seam; the dev-3.0 / git / tmux adapters
- * land later.
- *
- * @module adapters/fs
- */
+// Barrel for the filesystem adapters: the durable side of the loop (journal + events.ndjson)
+// plus the wall-clock — the persistence seam. The dev-3.0 / git / tmux adapters land later.
 
 export { FsJournal } from "./journal.ts";
 export { NdjsonEventLog } from "./eventlog.ts";

@@ -1,9 +1,5 @@
-/**
- * Fleet-level promotion policy — pure. The shell computes this once per tick
- * and spends the returned budget sequentially across cards.
- *
- * @module domain/fleet
- */
+// Fleet-level promotion policy — pure. The shell computes this once per tick and spends
+// the returned budget sequentially across cards.
 
 import type { AttemptRecord, Card, CardJournal } from "./types.ts";
 import { routingKey } from "./reconcile.ts";

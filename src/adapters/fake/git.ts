@@ -1,17 +1,11 @@
-/**
- * In-memory {@link GitPort} for tests. Scriptable diff and
- * checks; {@link FakeGit.merge} flips a per-card "merged" flag exactly once and
- * counts calls, so the exactly-once / write-ahead recovery tests
- * can assert a second `merge` is a no-op. No real git.
- *
- * @module adapters/fake/git
- */
+// In-memory GitPort for tests. Scriptable diff and checks; merge flips a per-card "merged" flag
+// exactly once and counts calls, so the exactly-once / write-ahead recovery tests can assert a
+// second merge is a no-op. No real git.
 
 import type { Card } from "../../domain/types.ts";
 import type { CheckResult, MergeResult, PrResult } from "../../ports/dto.ts";
 import type { GitPort } from "../../ports/git.ts";
 
-/** A green {@link CheckResult} used when none is scripted for a card. */
 const GREEN: CheckResult = {
   passed: true,
   exitCode: 0,
@@ -20,15 +14,10 @@ const GREEN: CheckResult = {
   durationMs: 0,
 };
 
-/**
- * In-memory git. `diff` defaults to `""` and `runChecks` to green; script either
- * per-card with the `set*` helpers. `merge` is idempotent: the first call marks
- * the card merged, every later call returns `alreadyMerged: true`.
- */
+// diff defaults to "" and runChecks to green; script either per-card with the set* helpers.
+// merge is idempotent: the first call marks the card merged, every later one returns alreadyMerged.
 export class FakeGit implements GitPort {
-  /** card ids passed to `merge`, in order (assert exactly-once: at most one real merge). */
-  readonly mergeCalls: string[] = [];
-  /** card ids passed to `runChecks`, in order. */
+  readonly mergeCalls: string[] = []; // assert exactly-once: at most one real merge
   readonly checkCalls: string[] = [];
 
   private diffs = new Map<string, string>();
@@ -36,17 +25,15 @@ export class FakeGit implements GitPort {
   private merged = new Set<string>();
   private prs = new Map<string, string>();
 
-  /** Script the diff text returned for a card. */
   setDiff(cardId: string, diff: string): void {
     this.diffs.set(cardId, diff);
   }
 
-  /** Script the checks outcome for a card. */
   setCheckResult(cardId: string, result: CheckResult): void {
     this.checks.set(cardId, result);
   }
 
-  /** Pre-mark a card's branch as already merged (e.g. for recovery fixtures). */
+  // Pre-mark a card's branch as already merged (e.g. for recovery fixtures).
   markMerged(cardId: string): void {
     this.merged.add(cardId);
   }

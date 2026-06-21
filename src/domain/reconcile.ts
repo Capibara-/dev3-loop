@@ -1,28 +1,13 @@
-/**
- * The reconcile state machine — `decide()`.
- *
- * PURE module: no I/O, no adapter imports. Given the durable journal, the resolved
- * policy, and a cheap {@link Observation} snapshot, it returns the **ordered**
- * {@link Action} list the imperative shell should execute this tick (`[]` = NoOp).
- * Every decision is re-derivable from durable state, so the loop is
- * level-triggered and crash-safe.
- *
- * Two pillars are encoded here:
- *  - **The implementor's self-report is never trusted.** A present `.dev3/result.json`
- *    with `status:"done"` triggers a `RunChecks` we run ourselves; `claimedTestsPass`
- *    is ignored. The green/red verdict comes from `journal.attempts` (the journaled
- *    result of a prior `RunChecks`), **never** from `obs`.
- *  - **The reviewer verdict drives routing, not the board lane.** dev-3.0's hardcoded
- *    on-exit hook may have force-advanced the card `review-by-ai → review-by-user`,
- *    so we route off `review.json` from **either** review lane.
- *
- * Guardrail caps (consecutive-failure / iteration / no-progress / oscillation /
- * stall / budget) are injected here as a single {@link GiveUpPredicate}
- * and **defaulted to {@link allowAll}** (never give up) — this module implements
- * none of that logic.
- *
- * @module domain/reconcile
- */
+// The reconcile state machine — decide(). PURE: no I/O, no adapter imports. Given the
+// durable journal, resolved policy, and a cheap Observation, returns the ordered Action
+// list the shell executes this tick ([] = NoOp). Every decision is re-derivable from
+// durable state, so the loop is level-triggered and crash-safe.
+//
+// Two pillars: (1) the implementor's self-report is never trusted — a present result.json
+// triggers a RunChecks we run ourselves, and the green/red verdict comes from
+// journal.attempts, never from obs; (2) the reviewer verdict drives routing, not the
+// board lane, since dev-3.0's on-exit hook may force-advance review-by-ai → review-by-user.
+// Guardrail caps are injected as a GiveUpPredicate, defaulted to allowAll here.
 
 import type {
   Action,
@@ -34,24 +19,15 @@ import type {
 } from "./types.ts";
 import type { Review, Observation } from "../ports/dto.ts";
 
-/**
- * Verdict of a guardrail give-up check. `stop:true` ⇒ abandon the card
- * to the human; `reason` is the diagnostic recorded on the {@link Action} kind
- * `"GiveUp"`.
- */
+// stop:true ⇒ abandon the card to the human; reason is recorded on the GiveUp action.
 export interface GiveUpVerdict {
   stop: boolean;
   reason?: string;
 }
 
-/**
- * The guardrail give-up check, injected into {@link decide} (evaluated
- * before any fix re-prompt and while a card is still working). Ships only the
- * {@link allowAll} stub for now; the real predicate (caps, no-progress, oscillation,
- * stall, budget) lands later. It receives `obs` as well as the journal so stall /
- * dead-session detection has the inputs it needs (a superset of a plain
- * `(journal, policy, now)` signature).
- */
+// The guardrail give-up check, injected into decide() (evaluated before any fix
+// re-prompt and while a card is still working). Takes obs as well as the journal so
+// stall / dead-session detection has its inputs.
 export type GiveUpPredicate = (
   journal: CardJournal,
   policy: CardPolicy,
@@ -62,40 +38,32 @@ export type GiveUpPredicate = (
 /** The default give-up predicate: never give up (guardrails land later). */
 export const allowAll: GiveUpPredicate = () => ({ stop: false });
 
-/**
- * Well-known id of the no-agent **merge-trigger** custom column. Moving
- * a card here is the human's "merge it" signal. The real id is repo-configured;
- * we treat this conventional value as the trigger and leave
- * **every other** custom column untouched.
- */
+// The no-agent merge-trigger custom column — moving a card here is the human's "merge it"
+// signal. The real id is repo-configured; we treat this conventional value as the trigger
+// and leave every other custom column untouched.
 export const READY_TO_MERGE: CustomColumnId = "ready_to_merge";
 
-/** The empty action list — the canonical NoOp. */
 const NOOP: Action[] = [];
 
-/** Routing key: the card's custom column if set, else its built-in `lane` (a card in
- *  a custom column has a stale lane). Shared by decide() and the fleet pre-pass. */
+// Routing key: the card's custom column if set, else its built-in lane (a card in a custom
+// column has a stale lane). Shared by decide() and the fleet pre-pass.
 export function routingKey(card: Card): Lane | CustomColumnId {
   return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
 }
 
-/** Last journaled attempt, or `undefined` when the card has never been attempted. */
 function lastAttempt(journal: CardJournal): CardJournal["attempts"][number] | undefined {
   return journal.attempts[journal.attempts.length - 1];
 }
 
-/** True iff some recorded attempt was over this exact diff (edge-detection). */
+// True iff some recorded attempt was over this exact diff (edge-detection).
 function attemptedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
   return diffHash !== undefined && journal.attempts.some((a) => a.diffHash === diffHash);
 }
 
-/**
- * True iff a **rejection** (red attempt) was already recorded for this exact diff —
- * i.e. its `diffHash` has been "acted on" for the reviewer fix-loop. A head that
- * only passed checks has just a green attempt (not rejected yet); once the shell
- * folds the reviewer's `changes_requested` as a red `AttemptRecord` for that head,
- * this returns true and a sticky `review.json` stops re-sending the fix.
- */
+// True iff a rejection (red attempt) was already recorded for this exact diff. A head that
+// only passed checks has just a green attempt (not rejected yet); once the shell folds the
+// reviewer's changes_requested as a red AttemptRecord, this returns true and a sticky
+// review.json stops re-sending the fix.
 function rejectedDiff(journal: CardJournal, diffHash: string | undefined): boolean {
   return (
     diffHash !== undefined &&
@@ -103,7 +71,7 @@ function rejectedDiff(journal: CardJournal, diffHash: string | undefined): boole
   );
 }
 
-/** Build a `MoveLane`, omitting `expect`/`note` when absent (exactOptionalPropertyTypes). */
+// Build a MoveLane, omitting expect/note when absent (exactOptionalPropertyTypes).
 function moveLane(
   card: Card,
   to: Lane | CustomColumnId,
@@ -116,7 +84,7 @@ function moveLane(
   return action;
 }
 
-/** Findings text for a implementor fix-loop after our mechanical checks went red. */
+// Findings text for an implementor fix-loop after our mechanical checks went red.
 function checkFailureFindings(card: Card, journal: CardJournal): string {
   const last = lastAttempt(journal);
   const sig = last?.failureSignature ? ` (failure signature ${last.failureSignature})` : "";
@@ -126,18 +94,14 @@ function checkFailureFindings(card: Card, journal: CardJournal): string {
   );
 }
 
-/** Findings text routed back to the implementor when the reviewer requests changes. */
+// Findings text routed back to the implementor when the reviewer requests changes.
 function graderFindings(review: Review): string {
   const blocking = review.blocking.length > 0 ? review.blocking : ["(reviewer requested changes)"];
   return `The independent reviewer requested changes:\n- ${blocking.join("\n- ")}`;
 }
 
-/**
- * Merge-gate dispatch on `policy.merge`. Returns the action(s) that take
- * a card across the human merge gate for the given policy. `expect` on `Merge` is
- * {@link READY_TO_MERGE}: the adapter re-verifies the column **and** `isMerged`
- * immediately before the irreversible push (CAS guard).
- */
+// Merge-gate dispatch on policy.merge. expect on Merge is READY_TO_MERGE: the adapter
+// re-verifies the column AND isMerged immediately before the irreversible push (CAS guard).
 export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJournal): Action[] {
   switch (policy.merge) {
     case "open_pr":
@@ -156,32 +120,19 @@ export function mergeGateAction(card: Card, policy: CardPolicy, journal: CardJou
   }
 }
 
-/**
- * Apply a human resume: dragging a card out of
- * `user-questions` back to `in-progress` means "blocker resolved, retry". Resets
- * `consecutiveFailures` and clears `journal.terminal` (so a deliberately-revived
- * card isn't still flagged `given_up`) while **preserving** the absolute attempt
- * history (`attempts`, the total-attempts cap input). Pure: returns a new journal.
- */
+// Human resume — dragging a card out of user-questions back to in-progress means "blocker
+// resolved, retry". Resets consecutiveFailures and clears terminal (so a deliberately-revived
+// card isn't still flagged given_up) while preserving the absolute attempt history (the
+// total-attempts cap input). Pure: returns a new journal.
 export function applyHumanResume(journal: CardJournal): CardJournal {
   const { terminal, ...rest } = journal;
   void terminal; // intentionally dropped
   return { ...rest, consecutiveFailures: 0 };
 }
 
-/**
- * The reconcile decision. Pure: `Action[]` only, no I/O. `[]` = NoOp.
- *
- * Routing key = the card's **custom column if set, else its built-in `lane`**.
- *
- * @param card     Read-only board projection.
- * @param journal  Durable per-card bookkeeping (the source of truth for state).
- * @param policy   Resolved per-card policy.
- * @param obs      Cheap side-effect-free snapshot; the check outcome is NOT
- *                 read from here — it comes from `journal.attempts`.
- * @param now      Epoch ms (from `ClockPort.now`).
- * @param shouldGiveUp  Guardrail predicate; defaults to {@link allowAll} (stub).
- */
+// The reconcile decision. Pure: Action[] only, no I/O ([] = NoOp). Routing key = the
+// card's custom column if set, else its built-in lane. The check outcome is read from
+// journal.attempts, NOT from obs.
 export function decide(
   card: Card,
   journal: CardJournal,
@@ -232,7 +183,7 @@ export function decide(
   }
 }
 
-/** `in-progress` routing. */
+// `in-progress` routing.
 function decideInProgress(
   card: Card,
   journal: CardJournal,
@@ -300,7 +251,7 @@ function decideInProgress(
   return NOOP;
 }
 
-/** `review-by-ai` / `review-by-user` routing — verdict-driven. */
+// `review-by-ai` / `review-by-user` routing — verdict-driven.
 function decideReview(
   key: Lane,
   card: Card,
@@ -340,7 +291,7 @@ function decideReview(
   return NOOP;
 }
 
-/** Exhaustiveness guard: a `never` here means a union member is unhandled. */
+// Exhaustiveness guard: a `never` here means a union member is unhandled.
 function assertNever(x: never): never {
   throw new Error(`unreachable: ${JSON.stringify(x)}`);
 }

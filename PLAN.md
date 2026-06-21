@@ -621,7 +621,7 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 - **docs/POLICY.md** — `CRABBOX.md`/policy file format, every knob, defaults, examples.
 - **docs/OPERATIONS.md** — running, `preflight`, `replay`, reading the event log, what each guardrail trip looks like on the board, recovery after a crash.
 - **AGENTS.md** — conventions for agents editing this repo (mirrors dev-3.0's own AGENTS.md ethos): pure-domain rule, no I/O in `domain/`, test-first, atomic writes.
-- **Comment sparingly, mirroring dev-3.0's own style** (~9% comment lines, not per-symbol JSDoc): a short `//` header on a module only where its purpose isn't obvious, terse inline trailing comments for type-field formats/examples, section dividers, and comments reserved for the non-obvious *why* (invariants, gotchas, exactly-once/write-ahead rationale) — never narration that restates the code.
+- **Comment sparingly, mirroring dev-3.0's own style** (~9% comment lines, not per-symbol JSDoc): a short `//` header on a module only where its purpose isn't obvious, terse inline trailing comments for type-field formats/examples, section dividers, and comments reserved for the non-obvious *why* (invariants, gotchas, exactly-once/write-ahead rationale) — never narration that restates the code. **This is the binding rule for every milestone, including ports and `Action` variants:** do **not** add a `/** */` block (with or without `@param`/`@returns`) to every port method, every type, or every field. Use one terse trailing `// …` per method/field, and reserve a `/** */` block for exported surface that genuinely warrants it (one line where possible).
 
 ---
 

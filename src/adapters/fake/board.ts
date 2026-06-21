@@ -1,19 +1,11 @@
-/**
- * In-memory {@link BoardPort} for tests. Holds the cards in RAM and
- * **records** every mutation so unit tests can assert the reconciler's intent
- * without a running dev-3.0 or any real I/O.
- *
- * The `moveCard` `expect` guard mirrors dev-3.0's server-enforced compare-and-set
- * (`--if-status`): when `expect` is given and the card is no longer in that lane
- * the move is a **no-op, not an error**.
- *
- * @module adapters/fake/board
- */
+// In-memory BoardPort for tests. Holds the cards in RAM and records every mutation so unit
+// tests can assert the reconciler's intent without a running dev-3.0 or real I/O. The moveCard
+// expect guard mirrors dev-3.0's server-enforced compare-and-set (--if-status): when expect is
+// given and the card is no longer in that lane the move is a no-op, not an error.
 
 import type { Card, CustomColumnId, Lane } from "../../domain/types.ts";
 import type { BoardPort } from "../../ports/board.ts";
 
-/** The built-in lanes; anything else passed to {@link FakeBoard.moveCard} is a custom column. */
 const BUILTIN_LANES = new Set<string>([
   "todo",
   "in-progress",
@@ -25,41 +17,29 @@ const BUILTIN_LANES = new Set<string>([
   "cancelled",
 ]);
 
-/** A recorded {@link FakeBoard.moveCard} call. */
 export interface MoveRecord {
   id: string;
   to: Lane | CustomColumnId;
-  /** The expected current lane/column (compare-and-set guard), or `undefined` for unguarded. */
-  expect: Lane | CustomColumnId | undefined;
-  /** False when the `expect` guard did not match and the move was skipped. */
-  applied: boolean;
+  expect: Lane | CustomColumnId | undefined; // compare-and-set guard, or undefined for unguarded
+  applied: boolean; // false when the expect guard did not match and the move was skipped
 }
 
-/** A recorded {@link FakeBoard.addNote} call. */
 export interface NoteRecord {
   id: string;
   note: string;
 }
 
-/** A recorded {@link FakeBoard.setOverview} call. */
 export interface OverviewRecord {
   id: string;
   text: string;
 }
 
-/**
- * In-memory board. Construct with the cards under test; mutations update the
- * in-memory cards (so {@link FakeBoard.listCards} reflects moves) and append to
- * the public record arrays for assertions.
- */
+// Construct with the cards under test; mutations update the in-memory cards (so listCards
+// reflects moves) and append to the public record arrays for assertions.
 export class FakeBoard implements BoardPort {
-  /** Live cards, mutated in place by {@link FakeBoard.moveCard}. */
-  readonly cards: Card[];
-  /** Every `moveCard` call, in order (incl. guard-skipped ones, `applied: false`). */
-  readonly moves: MoveRecord[] = [];
-  /** Every `addNote` call, in order. */
+  readonly cards: Card[]; // live cards, mutated in place by moveCard
+  readonly moves: MoveRecord[] = []; // every moveCard call (incl. guard-skipped ones)
   readonly notes: NoteRecord[] = [];
-  /** Every `setOverview` call, in order. */
   readonly overviews: OverviewRecord[] = [];
 
   private watchers = new Set<() => void>();
@@ -102,7 +82,7 @@ export class FakeBoard implements BoardPort {
     return () => this.watchers.delete(onChange);
   }
 
-  /** Test helper: fire all registered `watch` callbacks (simulate a store change). */
+  // Test helper: fire all registered `watch` callbacks (simulate a store change).
   emitChange(): void {
     for (const w of this.watchers) w();
   }
