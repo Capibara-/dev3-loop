@@ -46,7 +46,7 @@ export type ParseResult =
 const SUBCOMMAND_HELP: Record<Subcommand, string> = {
   run: "Reconcile the board continuously (not implemented yet)",
   "dry-run": "Print the action plan without mutating anything (not implemented yet)",
-  replay: "Rebuild journal state from the event log (not implemented yet)",
+  replay: "Render <stateDir>/events.ndjson as a readable timeline",
   preflight: "Validate the dev-3.0 store + config before running (not implemented yet)",
 };
 
@@ -59,12 +59,14 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
 const SUBCOMMAND_STATUS: Record<Subcommand, string> = {
   run: "run: not implemented yet — reconcile loop is wired (app/loop startReconciler) but the real dev-3.0 adapters land in M4",
   "dry-run": "dry-run: not implemented yet — the loop's dry-run mode is implemented + tested against fakes; the E2E command lands in M7 (needs M4 adapters)",
-  replay: "replay: not implemented yet (M2)",
+  // replay is implemented (M2) and handled directly in run() — this status line is unused.
+  replay: "replay: render the event log timeline — usage: dev3-loop replay <stateDir>",
   preflight: "preflight: not implemented yet (M4)",
 };
 
 /** Version string, single-sourced from package.json. */
 import pkg from "../package.json" with { type: "json" };
+import { replay } from "./app/replay.ts";
 export const VERSION: string = (pkg as { version: string }).version;
 
 /** Render the usage / help text. */
@@ -107,10 +109,11 @@ export interface Io {
 }
 
 /**
- * Execute the CLI for the given args and return the process exit code.
+ * Execute the CLI for the given args and return the process exit code. Async
+ * because `replay` reads the event log; the parse-level results stay immediate.
  * Does no process-level side effects beyond writing to `io`.
  */
-export function run(argv: readonly string[], io: Io): number {
+export async function run(argv: readonly string[], io: Io): Promise<number> {
   const parsed = parseArgs(argv);
   switch (parsed.kind) {
     case "help":
@@ -128,8 +131,35 @@ export function run(argv: readonly string[], io: Io): number {
       io.err(usage());
       return 1;
     case "command":
+      if (parsed.command === "replay") return runReplay(argv, io);
       io.out(SUBCOMMAND_STATUS[parsed.command]);
       return 0;
+  }
+}
+
+/**
+ * `replay <stateDir>`: read `${stateDir}/events.ndjson` and print its timeline.
+ * The state dir is the first positional after the command. Unresolved-on-crash
+ * markers (an `intent` with no `done`) are surfaced on stderr but are not an error
+ * — they are exactly what a crash leaves and what recovery reconciles.
+ */
+async function runReplay(argv: readonly string[], io: Io): Promise<number> {
+  const stateDir = argv[1];
+  if (stateDir === undefined) {
+    io.err("error: replay requires a <stateDir>\n");
+    io.err(usage());
+    return 1;
+  }
+  try {
+    const { timeline, unresolved } = await replay(stateDir);
+    io.out(timeline.length > 0 ? timeline : "(no events)");
+    if (unresolved.length > 0) {
+      io.err(`warning: ${unresolved.length} unresolved-on-crash marker(s) — see recovery`);
+    }
+    return 0;
+  } catch (e) {
+    io.err(`error: ${(e as Error).message}`);
+    return 1;
   }
 }
 
@@ -139,5 +169,5 @@ const consoleIo: Io = {
 };
 
 if (import.meta.main) {
-  process.exit(run(process.argv.slice(2), consoleIo));
+  void run(process.argv.slice(2), consoleIo).then((code) => process.exit(code));
 }
