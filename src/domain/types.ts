@@ -70,8 +70,11 @@ export interface CardPolicy {
   /** The agent that writes code. */
   producer: AgentSpec;
   /**
-   * The independent grader. MUST differ from {@link CardPolicy.producer} in
-   * `agent` OR `config` (asserted at config-load; §8).
+   * The independent grader. May share {@link CardPolicy.producer}'s `agent` /
+   * `config` (even the same model) — independence comes from the grader's
+   * separate launch + read-only rubric prompt + re-running checks, not from a
+   * distinct `(agent, config)`. A different model is recommended but not enforced
+   * (§8).
    */
   grader: AgentSpec;
   /** Mechanical checks command run in the worktree, e.g. "bun run test && tsc --noEmit". */

@@ -1,5 +1,5 @@
 /**
- * Config boot + validation (T9 — PLAN.md §11, constraint #6, §13 test 3).
+ * Config boot + validation (T9 — PLAN.md §11).
  *
  * Loads the global config (state dir, store path, dev3 binary, tick interval,
  * concurrency cap, daily spend ceiling, default policy) and resolves the
@@ -7,18 +7,17 @@
  * overrides**. Everything is schema-validated and **fails fast** at boot with a
  * readable {@link ConfigError}.
  *
- * The single hard invariant enforced here is **producer ≠ grader** (PLAN §8,
- * constraint #6): an identical `(agent, config)` pair is a boot error. A
- * different *model* for the grader is recommended (decorrelated blind spots) but
- * **not** enforced — the real grading rigor comes from re-running mechanical
- * checks (constraint #8), fresh context, and a read-only structured verdict, not
- * from model diversity.
+ * The producer and grader are configured independently (`policy.producer` /
+ * `policy.grader`) and **may share a model** — independence comes from the
+ * grader's separate, fresh launch (`review-by-ai`), its read-only rubric prompt,
+ * and re-running mechanical checks (constraint #8), not from the `(agent, config)`
+ * pair being distinct. A different grader model is recommended (decorrelated
+ * blind spots) but neither required nor enforced.
  *
  * **Purity boundary:** parse + validate ({@link parseGlobalConfig},
- * {@link parseCardPolicy}, {@link resolvePolicy}, {@link assertDistinctAgents})
- * are pure and exhaustively unit-testable with zero I/O. The **only** file I/O is
- * {@link FileConfig.load}; tests use {@link FileConfig.fromObject} (parsed
- * object, no disk).
+ * {@link parseCardPolicy}, {@link resolvePolicy}) are pure and exhaustively
+ * unit-testable with zero I/O. The **only** file I/O is {@link FileConfig.load};
+ * tests use {@link FileConfig.fromObject} (parsed object, no disk).
  *
  * The repo keeps `types: []` (no Node/Bun globals in scope), so — mirroring
  * `cli.ts` — we declare the tiny ambient surface this module actually touches
@@ -68,37 +67,6 @@ export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConfigError";
-  }
-}
-
-// --- producer ≠ grader (PLAN §8, constraint #6, §13 test 3) ---------------
-
-function sameAgentSpec(a: AgentSpec, b: AgentSpec): boolean {
-  return a.agent === b.agent && (a.config ?? undefined) === (b.config ?? undefined);
-}
-
-function specLabel(spec: AgentSpec): string {
-  return spec.config ? `${spec.agent}/${spec.config}` : `${spec.agent} (default config)`;
-}
-
-/**
- * Enforce producer/grader independence for one resolved pairing (PLAN §8,
- * constraint #6): an identical `(agent, config)` pair is literally the same
- * invocation profile (zero independence) ⇒ throws {@link ConfigError}.
- *
- * A *different model* for the grader is recommended but deliberately **not**
- * enforced — the real grading guarantees are checks-as-truth, fresh context, and
- * a read-only structured verdict (PLAN §8 / constraint #8), none of which depend
- * on model diversity.
- */
-export function assertDistinctAgents(producer: AgentSpec, grader: AgentSpec, where: string): void {
-  if (sameAgentSpec(producer, grader)) {
-    throw new ConfigError(
-      `${where}: producer and grader must differ but both are "${specLabel(producer)}". ` +
-        `The grader must be an independent invocation (ideally a different model) — ` +
-        `pick a different agent or config (e.g. producer builtin-claude/claude-default-opus48, ` +
-        `grader builtin-gemini/gemini-default).`,
-    );
   }
 }
 
@@ -319,18 +287,13 @@ export function parseGlobalConfig(raw: unknown): GlobalConfig {
     throw new ConfigError("config.defaultPolicy is required");
   }
   const defaultPolicy = parseCardPolicy(o["defaultPolicy"], "config.defaultPolicy");
-  assertDistinctAgents(defaultPolicy.producer, defaultPolicy.grader, "config.defaultPolicy");
 
   const repoPolicies: Record<string, PolicyOverrides> = {};
   if (o["repoPolicies"] !== undefined) {
     const rp = asObject(o["repoPolicies"], "config.repoPolicies");
     for (const repo of Object.keys(rp)) {
       const where = `config.repoPolicies["${repo}"]`;
-      const overrides = parsePolicyOverrides(rp[repo], where);
-      repoPolicies[repo] = overrides;
-      // Boot-check the repo-resolved pairing too — a repo may override producer/grader.
-      const merged = resolvePolicy(defaultPolicy, overrides);
-      assertDistinctAgents(merged.producer, merged.grader, where);
+      repoPolicies[repo] = parsePolicyOverrides(rp[repo], where);
     }
   }
 
@@ -355,9 +318,7 @@ export function parseGlobalConfig(raw: unknown): GlobalConfig {
 
 /**
  * File-backed {@link ConfigPort}. Resolves each card's policy as
- * `defaultPolicy ⊕ repoPolicies[card.repo] ⊕ cardOverrides`, re-asserting
- * producer≠grader on the resolved pairing (defense in depth — a per-card
- * override could reintroduce a collision).
+ * `defaultPolicy ⊕ repoPolicies[card.repo] ⊕ cardOverrides`.
  *
  * Construct via {@link FileConfig.load} (reads a JSON file — the only I/O here)
  * or {@link FileConfig.fromObject} (already-parsed object, no disk).
@@ -390,13 +351,10 @@ export class FileConfig implements ConfigPort {
     return FileConfig.fromObject(raw);
   }
 
-  // `async` so a failed independence re-check surfaces as a rejection (the
-  // `ConfigPort` contract), not a synchronous throw.
-  async policyFor(card: Card): Promise<CardPolicy> {
+  policyFor(card: Card): Promise<CardPolicy> {
     const repoOverride = this.global.repoPolicies[card.repo];
     const cardOverride = parseCardPolicyOverrides(card);
     const resolved = resolvePolicy(this.global.defaultPolicy, repoOverride, cardOverride);
-    assertDistinctAgents(resolved.producer, resolved.grader, `resolved policy for card ${card.id}`);
-    return resolved;
+    return Promise.resolve(resolved);
   }
 }

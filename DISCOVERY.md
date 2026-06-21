@@ -316,14 +316,15 @@ Installed default (`settings.json`): `defaultAgentId: builtin-claude`,
 `defaultConfigId: claude-default-opus48`, `agentBinaryPaths."builtin-claude":
 /Users/gabik/.local/bin/claude`.
 
-> **PLAN IMPACT (producer≠grader, §8):** trivially satisfiable and there's lots
-> of cross-model choice for a genuinely independent grader. Recommended default
-> pairing: **producer `builtin-claude`/`claude-default-opus48`**, **grader a
-> different model** — e.g. `builtin-gemini`/`gemini-default` or
-> `builtin-codex`/`codex-default` — so the grader is a different *model*, not just
-> a different config. The boot-time assertion in PLAN should reject equal
-> `(agent,config)` pairs and *warn* when only `config` differs but the underlying
-> `model` is the same.
+> **PLAN IMPACT (grader config, §8):** there's lots of cross-model choice if you
+> *want* a different-model grader. Recommended (not enforced) default pairing:
+> **producer `builtin-claude`/`claude-default-opus48`**, grader a different model
+> — e.g. `builtin-gemini`/`gemini-default` or `builtin-codex`/`codex-default`.
+> But the producer and grader **may also share the same model/config** (e.g. Opus
+> for both): grader independence comes from the separate `review-by-ai` launch +
+> read-only rubric prompt + re-running checks, not from a distinct `(agent,
+> config)`. So there is **no** boot-time producer≠grader assertion — config just
+> validates schema + fills defaults.
 
 ---
 
@@ -335,7 +336,7 @@ decisions. The overlaps:
 
 | PLAN feature | dev-3.0 already has | Gap dev3-loop still fills |
 |---|---|---|
-| Independent AI grader stage | **`review-by-ai` column auto-runs a review agent.** Moving a task to `review-by-ai` launches `builtinColumnAgents["review-by-ai"]` (default `builtin-claude`/`claude-bypass-sonnet`, `DEFAULT_REVIEW_PROMPT`) in the pane; on exit it self-moves `review-by-ai → review-by-user` via `dev3 task move … --if-status review-by-ai`. | dev-3.0's reviewer is **not independent in the rigorous sense**: it runs *in a pane, can commit fixes itself*, defaults to the **same agent family** (sonnet), has **no structured `review.json`**, and doesn't *re-run mechanical checks as source of truth*. dev3-loop's grader = different **model**, **read-only**, structured per-criterion verdict, checks re-run. To avoid double-grading, either disable `builtinColumnAgents["review-by-ai"]` in project config, or run our grader **out-of-band** (fresh invocation / custom column) and treat `review-by-ai` as just a lane. |
+| Independent AI grader stage | **`review-by-ai` column auto-runs a review agent.** Moving a task to `review-by-ai` launches `builtinColumnAgents["review-by-ai"]` (default `builtin-claude`/`claude-bypass-sonnet`, `DEFAULT_REVIEW_PROMPT`) in the pane; on exit it self-moves `review-by-ai → review-by-user` via `dev3 task move … --if-status review-by-ai`. | dev-3.0's reviewer is **not independent in the rigorous sense**: it runs *in a pane, can commit fixes itself*, defaults to the **same agent family** (sonnet), has **no structured `review.json`**, and doesn't *re-run mechanical checks as source of truth*. dev3-loop's grader = **read-only**, structured per-criterion verdict, checks re-run (optionally a different model). To avoid double-grading, either disable `builtinColumnAgents["review-by-ai"]` in project config, or run our grader **out-of-band** (fresh invocation / custom column) and treat `review-by-ai` as just a lane. |
 | Merge / PR | **RPCs exist:** `mergeTask`, `pushTask`, `rebaseTask`, `createPullRequest {autoMerge?}`, `openPullRequest`. Plus `MERGE_COMPLETE_ELIGIBLE_STATUSES = [user-questions, review-by-user, review-by-colleague]` and `prepareMergeCompletionPrompt`. | **These are RPC/GUI only — NOT in the `dev3` CLI** (no merge command). So to drive merge we either (a) keep PLAN's design and **drive git ourselves** (`GitPort`, full control, write-ahead, exactly-once — *recommended*), or (b) call the socket RPC `mergeTask`/`createPullRequest` (reuse dev-3.0 logic, but not built for our exactly-once/idempotency model). The plan's "we own git" stance stays the safer default. |
 | Human "PR review" gate | **`review-by-colleague` ("PR Review") status + `peerReviewEnabled` + `githubAuthHost/Login`** — a built-in PR-review lane. | Map PLAN's `open_pr` merge policy onto this lane instead of inventing one. |
 | Atomic lane moves | **`--if-status` / `--if-status-not` compare-and-set, enforced inside the server data-lock.** | Use directly — gives idempotent, race-free moves vs. the human, for free. No need to build our own CAS. |
@@ -344,7 +345,7 @@ decisions. The overlaps:
 
 **Net repositioning:** dev3-loop is *not* "add AI review + merge to dev-3.0" —
 dev-3.0 has rudimentary versions of both. dev3-loop is the **autonomous,
-rigorous, recoverable reconciler**: independent different-model read-only grading
+rigorous, recoverable reconciler**: independent read-only grading
 with structured verdicts, mechanical-checks-as-truth, the guardrail/cap/
 oscillation/budget safety net, write-ahead exactly-once merge, level-triggered
 convergence, and *policy-driven* progression — none of which dev-3.0 has. Update
@@ -377,8 +378,9 @@ triggerColumnAgentIfNeeded` + `shared-pure.ts:buildCmdScript`):
   opposite of an independent read-only grader.
 
 **Reuse requires (else it violates the plan):**
-1. **Override `builtinColumnAgents["review-by-ai"]`** = { **different-model**
-   agentId/configId, our adversarial **rubric prompt** that re-runs checks, diffs
+1. **Override `builtinColumnAgents["review-by-ai"]`** = { an agentId/configId of
+   our choosing (a different model is recommended but optional — it may even match
+   the producer's), our adversarial **rubric prompt** that re-runs checks, diffs
    `origin/<base>`, writes `.dev3/review.json`, and says *do not edit* }.
    (Disabling instead: set `builtinColumnAgents` to an object *without* a
    `review-by-ai` key → no agent + no onExit hook → inert lane we fully own. If

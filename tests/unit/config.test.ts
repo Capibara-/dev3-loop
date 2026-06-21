@@ -1,15 +1,14 @@
 /**
- * Config boot + validation tests (T9 — PLAN §11, §13 test 3).
+ * Config boot + validation tests (T9 — PLAN §11).
  *
  * All pure: no real config file is read. `FileConfig.fromObject` parses an
- * in-memory object so the producer≠grader boot assertion, defaulting, and
- * repo/card policy resolution are exercised with zero I/O.
+ * in-memory object so schema validation/defaulting and repo/card policy
+ * resolution are exercised with zero I/O.
  */
 import { describe, expect, test } from "vitest";
 import type { Card } from "../../src/domain/types.ts";
 import {
   CONFIG_DEFAULTS,
-  ConfigError,
   FileConfig,
   POLICY_DEFAULTS,
   parseGlobalConfig,
@@ -93,59 +92,25 @@ test("policy caps default when omitted, explicit values win", () => {
   expect(c2.defaultPolicy.tokenBudget).toBe(250_000);
 });
 
-// --- §13 test 3: producer == grader ⇒ boot error --------------------------
+// --- producer/grader independence is NOT a config constraint --------------
+//
+// The producer and grader are configured independently but may share the same
+// agent+config (e.g. Opus for both). Independence comes from the grader's fresh
+// review-by-ai launch + read-only rubric prompt + re-running checks, not from a
+// distinct (agent, config). There is deliberately no boot error here.
 
-describe("producer ≠ grader (PLAN §8, §13 test 3)", () => {
-  test("identical agent+config ⇒ thrown boot error with a clear message", () => {
-    const bad = rawConfig({
+test("identical producer and grader (same agent+config) loads without error", () => {
+  const cfg = FileConfig.fromObject(
+    rawConfig({
       defaultPolicy: {
         merge: "merge_when_green",
         producer: { agent: "builtin-claude", config: "claude-default-opus48" },
         grader: { agent: "builtin-claude", config: "claude-default-opus48" },
         checksCmd: "tsc --noEmit",
       },
-    });
-    expect(() => FileConfig.fromObject(bad)).toThrow(ConfigError);
-    expect(() => FileConfig.fromObject(bad)).toThrow(/producer and grader must differ/);
-  });
-
-  test("identical agent with both configs absent ⇒ boot error", () => {
-    const bad = rawConfig({
-      defaultPolicy: {
-        merge: "merge_when_green",
-        producer: { agent: "builtin-claude" },
-        grader: { agent: "builtin-claude" },
-        checksCmd: "tsc --noEmit",
-      },
-    });
-    expect(() => parseGlobalConfig(bad)).toThrow(/producer and grader must differ/);
-  });
-
-  test("a repo override that collapses producer==grader ⇒ boot error", () => {
-    const bad = rawConfig({
-      repoPolicies: {
-        "owner/name": { grader: { agent: "builtin-claude", config: "claude-default-opus48" } },
-      },
-    });
-    // default producer is builtin-claude/claude-default-opus48 → repo grader now matches it.
-    expect(() => parseGlobalConfig(bad)).toThrow(/repoPolicies\["owner\/name"\].*must differ/s);
-  });
-
-  test("distinct configs ⇒ accepted, even if the same model (model diversity not enforced)", () => {
-    // Only the (agent, config) pair must differ; a same-model grader is a
-    // recommendation, not a boot error (the warn was intentionally dropped).
-    const cfg = FileConfig.fromObject(
-      rawConfig({
-        defaultPolicy: {
-          merge: "merge_when_green",
-          producer: { agent: "builtin-claude", config: "claude-default-opus48" },
-          grader: { agent: "builtin-claude", config: "claude-default-opus48-bypass" },
-          checksCmd: "tsc --noEmit",
-        },
-      }),
-    );
-    expect(cfg.global.defaultPolicy.grader.config).toBe("claude-default-opus48-bypass");
-  });
+    }),
+  );
+  expect(cfg.global.defaultPolicy.producer).toEqual(cfg.global.defaultPolicy.grader);
 });
 
 // --- per-repo + per-card policy resolution --------------------------------
@@ -186,7 +151,10 @@ describe("policyFor resolution (repo defaults then card overrides)", () => {
     expect(policy.stallMs).toBe(1234);
   });
 
-  test("a card override that reintroduces producer==grader ⇒ throws", async () => {
+  test("a card override may set the grader equal to the producer (no error)", async () => {
+    // default producer is builtin-claude/claude-default-opus48; the card points
+    // the grader at the same agent+config → accepted (independence isn't a config
+    // constraint).
     const cfg = FileConfig.fromObject(rawConfig());
     const card = mkCard({
       prompt: [
@@ -195,21 +163,8 @@ describe("policyFor resolution (repo defaults then card overrides)", () => {
         "```",
       ].join("\n"),
     });
-    await expect(cfg.policyFor(card)).rejects.toThrow(/must differ/);
-  });
-
-  test("a card override that only changes config (same model) is accepted", async () => {
-    // Distinct (agent, config) is enough; a same-model grader is not rejected.
-    const cfg = FileConfig.fromObject(rawConfig());
-    const card = mkCard({
-      prompt: [
-        "```dev3-loop",
-        JSON.stringify({ grader: { agent: "builtin-claude", config: "claude-default-opus48-auto" } }),
-        "```",
-      ].join("\n"),
-    });
     const policy = await cfg.policyFor(card);
-    expect(policy.grader.config).toBe("claude-default-opus48-auto");
+    expect(policy.grader).toEqual(policy.producer);
   });
 });
 
