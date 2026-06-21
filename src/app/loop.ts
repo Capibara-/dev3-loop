@@ -47,6 +47,7 @@ import {
   decide,
   type GiveUpPredicate,
 } from "../domain/reconcile.ts";
+import { recover } from "./recover.ts";
 import type {
   Action,
   AttemptRecord,
@@ -65,7 +66,7 @@ import type {
   JournalPort,
   RuntimePort,
 } from "../ports/index.ts";
-import type { CheckResult, Observation } from "../ports/dto.ts";
+import type { CheckResult, LoopEvent, Observation } from "../ports/dto.ts";
 
 // --- port bundle ----------------------------------------------------------
 
@@ -182,6 +183,7 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
     obs: Observation,
     journal: CardJournal,
     now: number,
+    actionId: string,
   ): Promise<CardJournal> {
     switch (action.kind) {
       case "NoOp":
@@ -213,14 +215,17 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
         return journal;
 
       case "Merge": {
-        // Idempotent + exactly-once: the adapter no-ops if already merged.
+        // Idempotent + exactly-once: the adapter no-ops if already merged. The
+        // write-ahead `pending` marker set before this ran is cleared on success
+        // (recovery re-verifies any marker still present after a crash).
         const result = await ports.git.merge(card);
-        return result.merged ? { ...journal, terminal: "merged" } : journal;
+        const cleared = clearPending(journal, actionId);
+        return result.merged ? { ...cleared, terminal: "merged" } : cleared;
       }
 
       case "OpenPr":
         await ports.git.openPr(card);
-        return { ...journal, terminal: "pr_opened" };
+        return { ...clearPending(journal, actionId), terminal: "pr_opened" };
 
       case "GiveUp":
         // Abandon to the human: move to user-questions + a diagnostic note, leave
@@ -281,26 +286,25 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
           continue;
         }
 
-        // Per-action write-ahead: intent → execute+fold → persist → done.
+        // Per-action write-ahead: (pending →) intent → execute+fold → persist → done.
         const actionId = `${card.id}:${action.kind}:${now}:${actionIndex}`;
         actionIndex += 1;
-        await ports.eventLog.append({
-          ts: now,
-          cardId: card.id,
-          type: "intent",
-          action: action.kind,
-          actionId,
-        });
-        journal = await applyAction(action, card, policy, obs, journal, now);
+        const detail = eventDetail(action);
+
+        // Irreversible effects (Merge/OpenPr) get a JOURNAL-side write-ahead marker
+        // persisted BEFORE they run, so a crash between here and `done` leaves a
+        // `pending` entry that recovery reality-checks (never blind-retries). Other
+        // actions are idempotent / CAS-guarded and need no marker.
+        if (isIrreversible(action)) {
+          journal = withPending(journal, actionId, action.kind, now);
+          await ports.journal.persist(journal);
+        }
+
+        await ports.eventLog.append(mkEvent("intent", now, card.id, action.kind, actionId, detail));
+        journal = await applyAction(action, card, policy, obs, journal, now, actionId);
         if (promotion) slots -= 1;
         await ports.journal.persist(journal);
-        await ports.eventLog.append({
-          ts: now,
-          cardId: card.id,
-          type: "done",
-          action: action.kind,
-          actionId,
-        });
+        await ports.eventLog.append(mkEvent("done", now, card.id, action.kind, actionId, detail));
       }
     }
 
@@ -365,6 +369,17 @@ export async function startReconciler(
   const loop = createLoop(ports, config);
   const dryRun = config.dryRun ?? false;
   const log = opts.log;
+  // Reality-check any write-ahead markers a prior crash left, BEFORE the first
+  // tick (so an in-flight Merge is reconciled, never blind-retried). Skipped in
+  // dry-run, which must mutate nothing.
+  if (!dryRun) {
+    const report = await recover(ports);
+    if (log && report.recovered.length > 0) {
+      for (const m of report.recovered) {
+        log(`[recover] ${m.cardId} ${m.kind} (${m.actionId}) → ${m.resolution}`);
+      }
+    }
+  }
   const runnerOpts: RunnerOptions = {
     intervalMs: config.intervalMs,
     sleep: opts.sleep ?? defaultSleep,
@@ -410,6 +425,68 @@ function isPromotion(action: Action): boolean {
 /** A fresh, never-attempted journal for a card the loadAll() snapshot didn't have. */
 function freshJournal(cardId: string): CardJournal {
   return { cardId, attempts: [], consecutiveFailures: 0, totalTokens: 0, pending: {} };
+}
+
+/**
+ * The irreversible, exactly-once effects: a botched retry can't be undone, so they
+ * get a journal-side write-ahead `pending` marker and a recovery reality-check.
+ * `MoveLane`/`RunChecks`/`SendFixPrompt`/launches are safe to repeat (CAS-guarded
+ * or idempotent), so they don't.
+ */
+function isIrreversible(action: Action): boolean {
+  return action.kind === "Merge" || action.kind === "OpenPr";
+}
+
+/** Add a write-ahead `pending` marker (new journal; never mutates the input). */
+function withPending(journal: CardJournal, actionId: string, kind: string, now: number): CardJournal {
+  return { ...journal, pending: { ...journal.pending, [actionId]: { kind, startedAt: now } } };
+}
+
+/** Clear a resolved write-ahead marker (new journal; no-op if it's already gone). */
+function clearPending(journal: CardJournal, actionId: string): CardJournal {
+  if (!(actionId in journal.pending)) return journal;
+  const pending = { ...journal.pending };
+  delete pending[actionId];
+  return { ...journal, pending };
+}
+
+/**
+ * Build a {@link LoopEvent}, attaching `detail` only when present (the schema uses
+ * `exactOptionalPropertyTypes`, so an explicit `undefined` is not allowed).
+ */
+function mkEvent(
+  type: "intent" | "done",
+  ts: number,
+  cardId: string,
+  action: Action["kind"],
+  actionId: string,
+  detail: Record<string, unknown> | undefined,
+): LoopEvent {
+  const event: LoopEvent = { ts, cardId, type, action, actionId };
+  if (detail !== undefined) event.detail = detail;
+  return event;
+}
+
+/**
+ * Structured detail for the audit trace. We keep a single `intent`/`done` event
+ * stream (no dedicated `lane_move`/`guardrail_trip` records) and let `replay`
+ * classify by `action` kind — so a `MoveLane` event carries its target/guard and a
+ * `GiveUp` event carries its reason, which is all the timeline needs to render
+ * lane moves and guardrail trips.
+ */
+function eventDetail(action: Action): Record<string, unknown> | undefined {
+  switch (action.kind) {
+    case "MoveLane": {
+      const detail: Record<string, unknown> = { to: action.to };
+      if (action.expect !== undefined) detail.expect = action.expect;
+      if (action.note !== undefined) detail.note = action.note;
+      return detail;
+    }
+    case "GiveUp":
+      return { reason: action.reason };
+    default:
+      return undefined;
+  }
 }
 
 /**
