@@ -287,7 +287,7 @@ describe("shell fold contract", () => {
   });
 });
 
-// --- M3: real guardrails wired into the loop ------------------------------
+// --- real guardrails wired into the loop ----------------------------------
 
 describe("guardrails end-to-end (real predicate is the loop default)", () => {
   test("a card at the consecutive-failure cap gives up → user-questions + note", async () => {
@@ -322,7 +322,7 @@ describe("guardrails end-to-end (real predicate is the loop default)", () => {
   });
 });
 
-// --- M3: circuit breaker gates promotions ---------------------------------
+// --- circuit breaker gates promotions -------------------------------------
 
 describe("circuit breaker end-to-end", () => {
   test("an open breaker blocks promotion and emits breaker_open once (rising edge)", async () => {

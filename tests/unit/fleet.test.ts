@@ -1,5 +1,5 @@
 /**
- * Fleet-policy tests (Test 6).
+ * Fleet-policy tests.
  *
  * {@link evaluateFleet} is PURE: a once-per-tick verdict over the full card list +
  * journals. Three proofs from the task:

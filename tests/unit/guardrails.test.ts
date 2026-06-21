@@ -1,5 +1,5 @@
 /**
- * Guardrail predicate tests (Test 5).
+ * Guardrail predicate tests.
  *
  * {@link guardrails} is PURE: a verdict derived from the durable journal + policy +
  * the cheap {@link Observation} + `now`. Each of the six predicates must trip on

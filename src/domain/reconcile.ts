@@ -73,12 +73,8 @@ export const READY_TO_MERGE: CustomColumnId = "ready_to_merge";
 /** The empty action list — the canonical NoOp. */
 const NOOP: Action[] = [];
 
-/**
- * The routing key for a card: its **custom column if set, else its built-in
- * `lane`**. A card sitting in a custom column has a stale `lane`, so the column id
- * wins. Shared by {@link decide} and the shell's fleet pre-pass (`liveCount`) so
- * both agree on what "lane" a card is in.
- */
+/** Routing key: the card's custom column if set, else its built-in `lane` (a card in
+ *  a custom column has a stale lane). Shared by decide() and the fleet pre-pass. */
 export function routingKey(card: Card): Lane | CustomColumnId {
   return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
 }
