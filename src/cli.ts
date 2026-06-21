@@ -56,11 +56,9 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
  * dev-3.0 adapters — so each still reports "not implemented yet" with the
  * milestone that unblocks it.
  */
-const SUBCOMMAND_STATUS: Record<Subcommand, string> = {
+const SUBCOMMAND_STATUS: Record<Exclude<Subcommand, "replay">, string> = {
   run: "run: not implemented yet — reconcile loop is wired (app/loop startReconciler) but the real dev-3.0 adapters land in M4",
   "dry-run": "dry-run: not implemented yet — the loop's dry-run mode is implemented + tested against fakes; the E2E command lands in M7 (needs M4 adapters)",
-  // replay is implemented and handled directly in run() — this status line is unused.
-  replay: "replay: render the event log timeline — usage: dev3-loop replay <stateDir>",
   preflight: "preflight: not implemented yet (M4)",
 };
 
