@@ -42,11 +42,13 @@
  */
 
 import {
-  allowAll,
   applyHumanResume,
   decide,
+  routingKey,
   type GiveUpPredicate,
 } from "../domain/reconcile.ts";
+import { guardrails } from "../domain/guardrails.ts";
+import { evaluateFleet, liveCount, type FleetDecision, type FleetOptions } from "../domain/fleet.ts";
 import { recover } from "./recover.ts";
 import type {
   Action,
@@ -96,21 +98,14 @@ export type PromotionBudget = (
 ) => number;
 
 /**
- * The trivial budget: `cap − liveCount`, where a card is "live" when it
- * occupies a fleet slot (not `todo`, not an observe-only terminal, not journaled
- * terminal). This exercises the gate's *shape* (pre-pass, sequential consumption,
- * the `slots <= 0` skip); the real fleet *policy* lands later.
+ * The concurrency-only budget: `cap − liveCount` (a card is "live" when it occupies
+ * a fleet slot — not `todo`, not an observe-only terminal, not journaled terminal).
+ * The real fleet *policy* (this cap **plus** the daily-spend ceiling + circuit
+ * breaker) lives in {@link evaluateFleet} and is the loop's default; this remains
+ * as the standalone concurrency seam and a `promotionBudget` override.
  */
 export function concurrencyBudget(cap: number): PromotionBudget {
-  return (cards, journals) => {
-    let live = 0;
-    for (const card of cards) {
-      if (journals[card.id]?.terminal !== undefined) continue;
-      const key = routingKey(card);
-      if (key !== "todo" && key !== "completed" && key !== "cancelled") live += 1;
-    }
-    return Math.max(0, cap - live);
-  };
+  return (cards, journals) => Math.max(0, cap - liveCount(cards, journals));
 }
 
 // --- the loop -------------------------------------------------------------
@@ -125,16 +120,44 @@ export interface PlannedAction {
   gated?: boolean;
 }
 
+/** Defaults for the fleet policy knobs (§7), applied when {@link LoopConfig} omits them. */
+export const FLEET_DEFAULTS = {
+  /** Daily-spend ceiling; `Infinity` ⇒ none. */
+  dailySpendCeiling: Number.POSITIVE_INFINITY,
+  /** Breaker window: last N completed attempts considered. */
+  breakerWindow: 10,
+  /** Breaker trip threshold (fraction of non-green). */
+  breakerThreshold: 0.5,
+  /** Cold-start floor: attempts required before the breaker may open. */
+  breakerMinSamples: 4,
+  /** Rolling spend window (24h). */
+  spendWindowMs: 86_400_000,
+} as const;
+
 /** Knobs for {@link createLoop}. */
 export interface LoopConfig {
-  /** Fleet live-card cap, used by the default {@link concurrencyBudget} seam. */
+  /** Fleet live-card concurrency cap. */
   concurrencyCap: number;
   /** When true, compute the plan but perform ZERO port mutations. */
   dryRun?: boolean;
-  /** Override the fleet budget seam (defaults to {@link concurrencyBudget}). */
+  /**
+   * Override the fleet budget seam with a concurrency-only counter. When set, the
+   * full {@link evaluateFleet} policy (spend ceiling + breaker) is bypassed — used
+   * for tests / the standalone concurrency seam.
+   */
   promotionBudget?: PromotionBudget;
-  /** Guardrail give-up predicate; defaults to {@link allowAll} (real caps land later). */
+  /** Guardrail give-up predicate; defaults to the real {@link guardrails}. */
   shouldGiveUp?: GiveUpPredicate;
+  /** Daily-spend ceiling (default {@link FLEET_DEFAULTS.dailySpendCeiling}). */
+  dailySpendCeiling?: number;
+  /** Breaker window N (default {@link FLEET_DEFAULTS.breakerWindow}). */
+  breakerWindow?: number;
+  /** Breaker threshold (default {@link FLEET_DEFAULTS.breakerThreshold}). */
+  breakerThreshold?: number;
+  /** Breaker cold-start floor (default {@link FLEET_DEFAULTS.breakerMinSamples}). */
+  breakerMinSamples?: number;
+  /** Rolling spend window in ms (default {@link FLEET_DEFAULTS.spendWindowMs}). */
+  spendWindowMs?: number;
 }
 
 /** The reconciler: one {@link Loop.tick} = one full level-triggered reconcile. */
@@ -154,8 +177,21 @@ const EMPTY_OBS: Observation = { result: null, review: null, alive: false, merge
  */
 export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
   const dryRun = config.dryRun ?? false;
-  const budget = config.promotionBudget ?? concurrencyBudget(config.concurrencyCap);
-  const shouldGiveUp = config.shouldGiveUp ?? allowAll;
+  const shouldGiveUp = config.shouldGiveUp ?? guardrails;
+  const overrideBudget = config.promotionBudget;
+  const fleetOpts: FleetOptions = {
+    cap: config.concurrencyCap,
+    dailySpendCeiling: config.dailySpendCeiling ?? FLEET_DEFAULTS.dailySpendCeiling,
+    breakerWindow: config.breakerWindow ?? FLEET_DEFAULTS.breakerWindow,
+    breakerThreshold: config.breakerThreshold ?? FLEET_DEFAULTS.breakerThreshold,
+    breakerMinSamples: config.breakerMinSamples ?? FLEET_DEFAULTS.breakerMinSamples,
+    spendWindowMs: config.spendWindowMs ?? FLEET_DEFAULTS.spendWindowMs,
+  };
+  // Rising-edge debounce for the `breaker_open` audit event. This is NOT essential
+  // state (constraint #5): if a restart loses it we emit at most one extra audit
+  // line, never a correctness divergence — the budget is recomputed from the
+  // journal every tick regardless.
+  let breakerWasOpen = false;
 
   /** Gather the cheap, side-effect-free {@link Observation} for a card. */
   async function observe(card: Card): Promise<Observation> {
@@ -244,8 +280,22 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
     const cards = await ports.board.listCards();
     const journals = await ports.journal.loadAll();
 
-    // PRE-PASS: the fleet gate, computed ONCE and consumed sequentially.
-    let slots = budget(cards, journals);
+    // PRE-PASS: the fleet gate, computed ONCE and consumed sequentially. The full
+    // policy (concurrency + daily-spend ceiling + circuit breaker) lives in the
+    // pure `evaluateFleet`; a `promotionBudget` override bypasses it with a
+    // concurrency-only counter.
+    const decision: FleetDecision = overrideBudget
+      ? { budget: overrideBudget(cards, journals), breakerOpen: false }
+      : evaluateFleet(cards, journals, fleetOpts, now);
+    let slots = decision.budget;
+
+    // Emit `breaker_open` on the rising edge only (a per-tick heartbeat would spam
+    // the audit log). Skipped in dry-run, which mutates nothing.
+    if (decision.breakerOpen && !breakerWasOpen && !dryRun) {
+      await ports.eventLog.append(breakerEvent(now, decision));
+    }
+    breakerWasOpen = decision.breakerOpen;
+
     const planned: PlannedAction[] = [];
 
     for (const card of cards) {
@@ -398,11 +448,6 @@ export async function startReconciler(
 
 // --- pure helpers ---------------------------------------------------------
 
-/** Routing key = the card's custom column if set, else its built-in lane. */
-function routingKey(card: Card): Lane | CustomColumnId {
-  return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
-}
-
 /**
  * Lane-gating: only cards being actively worked need the full cheap-read
  * snapshot. `todo` / observe-only terminal / journaled-terminal cards route off
@@ -465,6 +510,26 @@ function mkEvent(
   const event: LoopEvent = { ts, cardId, type, action, actionId };
   if (detail !== undefined) event.detail = detail;
   return event;
+}
+
+/**
+ * Sentinel `cardId` for fleet-wide events (e.g. `breaker_open`), which are not
+ * tied to a single card. `LoopEvent.cardId` is required, so we tag these
+ * distinctly rather than leaving it empty.
+ */
+const FLEET_CARD_ID = "*fleet*";
+
+/**
+ * Build the fleet-wide `breaker_open` audit event from a {@link FleetDecision},
+ * carrying the non-green rate + window size that tripped it.
+ */
+function breakerEvent(now: number, decision: FleetDecision): LoopEvent {
+  return {
+    ts: now,
+    cardId: FLEET_CARD_ID,
+    type: "breaker_open",
+    detail: { failRate: decision.failRate, windowSize: decision.windowSize },
+  };
 }
 
 /**

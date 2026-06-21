@@ -73,6 +73,16 @@ export const READY_TO_MERGE: CustomColumnId = "ready_to_merge";
 /** The empty action list — the canonical NoOp. */
 const NOOP: Action[] = [];
 
+/**
+ * The routing key for a card: its **custom column if set, else its built-in
+ * `lane`**. A card sitting in a custom column has a stale `lane`, so the column id
+ * wins. Shared by {@link decide} and the shell's fleet pre-pass (`liveCount`) so
+ * both agree on what "lane" a card is in.
+ */
+export function routingKey(card: Card): Lane | CustomColumnId {
+  return card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
+}
+
 /** Last journaled attempt, or `undefined` when the card has never been attempted. */
 function lastAttempt(journal: CardJournal): CardJournal["attempts"][number] | undefined {
   return journal.attempts[journal.attempts.length - 1];
@@ -184,8 +194,7 @@ export function decide(
   now: number,
   shouldGiveUp: GiveUpPredicate = allowAll,
 ): Action[] {
-  const key: Lane | CustomColumnId =
-    card.customColumnId && card.customColumnId.length > 0 ? card.customColumnId : card.lane;
+  const key: Lane | CustomColumnId = routingKey(card);
 
   switch (key) {
     case "todo":
