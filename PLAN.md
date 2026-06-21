@@ -35,12 +35,12 @@ versions of two things this plan once assumed we'd build from scratch:
 
 So dev3-loop is **not** "add AI review + merge to dev-3.0." It is the
 **rigorous, autonomous, recoverable reconciler** dev-3.0 deliberately lacks:
-*independent, different-model, read-only grading with a structured verdict*;
+*independent, read-only grading with a structured verdict*;
 *mechanical checks as the source of truth*; the *guardrail / cap / oscillation /
 budget safety net*; *write-ahead, exactly-once merge*; *level-triggered
 convergence*; and *policy-driven progression*. We **reuse** dev-3.0's
-`review-by-ai` lane as the launch mechanism for our grader (configured to a
-different model + read-only rubric prompt — see §8) rather than reimplementing
+`review-by-ai` lane as the launch mechanism for our grader (configured with our
+read-only rubric prompt — optionally a different model — see §8) rather than reimplementing
 agent launch, and we keep the option to grade out-of-band behind `RuntimePort`.
 
 ---
@@ -52,7 +52,7 @@ agent launch, and we keep the option to grade out-of-band behind `RuntimePort`.
 3. **Level-triggered reconciliation is the source of truth.** `fs.watch` is allowed only as a latency optimization; correctness must come from a periodic full reconcile that re-derives all actions from durable state. Watch events lost during downtime must never cause divergence.
 4. **All effectful actions are idempotent and write-ahead logged.** Record intent before acting, completion after; on restart, intent-without-completion triggers a *reconcile-and-verify*, never a blind retry. `merge` must be exactly-once.
 5. **The orchestrator holds no essential state in RAM.** Counters, attempt history, spend, and signatures live on disk (journal). A crash + restart resumes correctly.
-6. **Producer ≠ grader.** The grading agent is a *different* invocation, fresh context, ideally a *different model*, fed only the diff + criteria + check output — never the producer's conversation. It is read-only (never edits code).
+6. **Producer ≠ grader.** The grading agent is a *different* invocation, fresh context, fed only the diff + criteria + check output — never the producer's conversation. It is read-only (never edits code). Independence comes from this **separate launch + rubric prompt + re-running checks**, *not* from the agent/config being distinct: the producer and grader **may share the same model** (even the same `(agent, config)`). A different grader model is recommended (decorrelated blind spots) but neither required nor enforced.
 7. **"Done" means a merge commit in git**, not a status file and not a board column. Status files and columns are *claims*; git is the unfakeable record.
 8. **Guardrails are safety nets, never the success criterion.** Normal termination = mechanical-green AND grader-pass. Caps exist to bound the abnormal path.
 
@@ -161,7 +161,7 @@ export interface CardPolicy {
   stallMs: number;                // default 600_000 (10 min)
   tokenBudget?: number;           // per-card cap (optional)
   producer: AgentSpec;
-  grader: AgentSpec;              // MUST differ from producer.agent OR producer.config
+  grader: AgentSpec;              // may share producer's model/config; independence is by launch+prompt, not config
   checksCmd: string;             // e.g. "bun run test && tsc --noEmit"
 }
 
@@ -459,17 +459,21 @@ On give-up: `MoveLane → user_questions`, `addNote` the diagnostic (`attempt n/
 `review-by-ai` makes dev-3.0 spawn a *fresh* agent (new pane, `skipSystemPrompt`,
 **no producer conversation inherited**) running `builtinColumnAgents[
 "review-by-ai"]`. We must **override that config per repo** to:
-1. **a different model** than the producer (e.g. producer `claude-default-opus48`,
-   grader `gemini-default` / `codex-default`) — never leave it unset (the default
-   is a same-family *fixer* that edits & commits);
+1. **a model + permission mode of our choosing** (a different model than the
+   producer is *recommended* for decorrelated review, e.g. producer
+   `claude-default-opus48`, grader `gemini-default` / `codex-default`, but **not
+   required**) — never leave it unset (the default is a same-family *fixer* that
+   edits & commits);
 2. **our adversarial rubric prompt** (see §11) that re-runs the checks itself,
    diffs `origin/<base>`, writes `.dev3/review.json`, and is told **not to edit**.
 
 Rules that still hold:
 - Spawned only **after** mechanical checks pass (never grade non-compiling output).
-- `policy.grader` MUST differ from `policy.producer` in agent or config; assert at
-  config-load and fail fast. **Warn** when only `config` differs but the resolved
-  *model* is identical (DISCOVERY §Q4 — the registry exposes the model per config).
+- `policy.grader` and `policy.producer` are configured independently but **may
+  share the same agent/config** (e.g. Opus for both). A *different model* is
+  recommended but **not** enforced — model diversity is the least load-bearing
+  independence property; the guarantees that actually matter are the rules in this
+  list (checks-re-run, no inherited conversation, structured verdict).
 - Input = acceptance criteria (or full description) + `git diff origin/<base>` +
   check output. No producer conversation/scrollback.
 - Read-only is **prompt-level**, not enforced (plan-mode would block writing
@@ -551,7 +555,7 @@ Failure signature = stable hash of the sorted failing-test ids (fallback: normal
 
 - **Per-repo policy file** `CRABBOX.md` (or `.dev3-loop.yaml`) at repo root, YAML frontmatter: `merge.default_policy`, `cap`, `stall_ms`, `producer`, `grader`, `checks`. `ConfigPort.policyFor(card)` evaluates repo defaults then per-card overrides (from card labels/description).
 - **Env / `config.json`:** `stateDir`, `dev3StorePath` (DISCOVERY §18), `dev3Bin` (path to `dev3`), `tickIntervalMs`, `concurrencyCap`, `dailySpendCeiling`, `defaultPolicy`.
-- Validate config at boot with a small schema; fail fast with a readable error (esp. producer==grader).
+- Validate config at boot with a small schema; fail fast with a readable error.
 
 ---
 
@@ -589,7 +593,7 @@ Core principle: **the domain is pure, so it's tested with zero I/O.** Adapters a
 Mandatory unit tests (`tests/unit`):
 1. `decide()` returns the correct `Action[]` for **every** row of the §6 transition table (table-driven; `[]` = NoOp, order asserted for compound rows).
 2. Producer self-report is ignored: `result.json.claimedTestsPass=true` but `runChecks` red ⇒ red path.
-3. Grader independence assertion: config with producer==grader ⇒ boot error.
+3. Config boot: a valid config loads (defaults filled); schema violations fail fast with a readable error; producer and grader may share the same agent/config (no independence boot error).
 4. Grader only launches after green; non-compiling output never reaches `ai_review`.
 5. Guardrails: each of the six predicates trips on its own fixture and not otherwise; consecutive-failure resets on green; no-progress trips on repeated signature; oscillation trips on repeated diff hash.
 6. Fleet: concurrency cap blocks promotion; spend ceiling drains; breaker opens >50% fail rate.
@@ -667,7 +671,7 @@ six design deltas that must be folded in **before M1**:
    review agent** when a card enters `review-by-ai`, and ships `mergeTask`/
    `createPullRequest` RPCs and a `review-by-colleague` ("PR Review") lane. So
    dev3-loop must position as the *rigorous autonomous reconciler* (independent
-   different-model read-only grader, checks-as-truth, guardrails, write-ahead
+   read-only grader, checks-as-truth, guardrails, write-ahead
    exactly-once, level-triggered) and must **disable/​bypass
    `builtinColumnAgents["review-by-ai"]`** (or grade out-of-band) so the two
    reviewers don't collide. The `ready_to_merge` merge-trigger **is viable** — a
@@ -687,9 +691,10 @@ six design deltas that must be folded in **before M1**:
    `capture-pane`/`list-windows` **hang** on attached control-mode sessions →
    timeout-guard all pane reads; prefer file signals for correctness.
 6. **AgentSpec = {agentId, configId}** with a rich registry (claude/codex/gemini/
-   cursor/opencode). Default pairing: producer `builtin-claude`/
-   `claude-default-opus48`, grader a **different model** (e.g.
-   `builtin-gemini`/`gemini-default`). acceptanceCriteria isn't structured — parse
+   cursor/opencode). Recommended (not enforced) default pairing: producer
+   `builtin-claude`/`claude-default-opus48`, grader a different model (e.g.
+   `builtin-gemini`/`gemini-default`); the boot assert only requires a distinct
+   `(agent, config)`. acceptanceCriteria isn't structured — parse
    from `description` or pass the whole description to the grader.
 
 ---
@@ -737,8 +742,9 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   `totalAttempts`. Guardrail-trip GiveUp is M3 (stub predicate=allow). Tests
   1,2,4,7,8. (dep: T6,T7)
 - **T9 Config boot + validation.** `src/app/config.ts` + `ConfigPort` fake: load
-  config + per-repo policy, defaults, **fail-fast on producer==grader** + warn on
-  same-model (test 3). (dep: T5)
+  config + per-repo policy, defaults, schema-validated **fail-fast** with readable
+  errors. Producer and grader may share the same agent/config — independence is by
+  launch+prompt, not config (test 3). (dep: T5)
 - **T10 Composition root + tick loop.** `src/app/loop.ts`: wire ports→fakes.
   `tick()` per amended §3: per-tick `promotionBudget` pre-pass (shell-side fleet
   gate, Finding #3 — stubbed seam in M1; full caps/breaker are M3) → per card

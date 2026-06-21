@@ -32,13 +32,14 @@ export interface RuntimePort {
 
   /**
    * Launch the **independent** grader (PLAN §8). The default adapter moves the
-   * card to `review-by-ai` with `builtinColumnAgents` overridden to a different
-   * model + the adversarial read-only rubric; an out-of-band adapter is a drop-in
+   * card to `review-by-ai` with `builtinColumnAgents` overridden to the grader
+   * config + the adversarial read-only rubric; an out-of-band adapter is a drop-in
    * alternative the domain never sees. Must only be called after mechanical
    * checks are green.
    *
    * @param card   the card to grade.
-   * @param spec   grader agent + config (MUST differ from the producer; §8).
+   * @param spec   grader agent + config (may match the producer's; independence is
+   *               by launch + rubric prompt + re-running checks, not config; §8).
    * @param prompt the grader rubric prompt (diff + criteria + check output).
    */
   launchGrader(card: Card, spec: AgentSpec, prompt: string): Promise<void>;
