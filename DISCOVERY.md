@@ -142,8 +142,8 @@ Use the `dev3` CLI **only for mutations** (`task move`, `note add`,
   "worktreePath": "/Users/…/worktrees/<slug>/8daefe75/worktree",  // null until started
   "branchName": "dev3/task-8daefe75",                              // null until started
   "groupId": "uuid", "variantIndex": 1,    // task "variants" (N parallel attempts of one prompt)
-  "agentId": "builtin-claude",             // ← producer AgentSpec.agent
-  "configId": "claude-default-opus48",     // ← producer AgentSpec.config
+  "agentId": "builtin-claude",             // ← implementor AgentSpec.agent
+  "configId": "claude-default-opus48",     // ← implementor AgentSpec.config
   "createdAt": "…Z", "updatedAt": "…Z", "movedAt": "…Z",
   "tmuxSocket": "dev3",                     // logical socket name (see Q3 caveat)
   "labelIds": ["uuid", …],
@@ -163,13 +163,13 @@ Use the `dev3` CLI **only for mutations** (`task move`, `note add`,
 Mapping to PLAN §4 `Card`: `id`←id, `repo`←project.name (or derive owner/name
 from git remote), `baseBranch`←baseBranch, `branch`←branchName, `worktreePath`←
 worktreePath, `lane`←status, `prompt`←description, `acceptanceCriteria`← parse
-from description (no structured field — see note), `policy.producer`←
+from description (no structured field — see note), `policy.implementor`←
 {agentId, configId}.
 
 > **Note (acceptanceCriteria):** there is **no structured acceptance-criteria
 > field** — it's embedded in `description` markdown. Options: (a) parse a
 > conventional `## Acceptance criteria` / `## Tests` section, or (b) feed the
-> whole `description` to the grader as criteria. Decide in M5; (b) is safe default.
+> whole `description` to the reviewer as criteria. Decide in M5; (b) is safe default.
 
 **Sample fixture:** commit a sanitized copy of one `projects.json` entry + its
 `data/<slug>/tasks.json` under `tests/fixtures/store/` (PLAN test #14).
@@ -256,7 +256,7 @@ Concretely, prefer (in order):
   pane *for us* over the socket and returns the text. Server-mediated, so it
   doesn't fight the control-mode client the way our own `capture-pane` does. This
   is the single best replacement for byte-delta heartbeat **and** for reading the
-  producer's scrollback. (Confirm it doesn't hang the same way — M4.)
+  implementor's scrollback. (Confirm it doesn't hang the same way — M4.)
 - **Worktree file mtimes** — newest mtime under `worktree/` (or `git -C … status`
   churn) advancing = agent is doing work. Zero tmux dependency.
 - **Store fields** — `task.updatedAt` / `movedAt` / `overview` changing between
@@ -271,7 +271,7 @@ Concretely, prefer (in order):
    a far more reliable heartbeat (mtime delta) and diff source than capture-pane,
    and `diffs/` may even replace `git diff` for the diff-hash.
 2. **Our `.dev3/result.json` / `.dev3/review.json` convention** (PLAN §10) — we
-   control the producer/grader prompts, so this stays the **authoritative** done
+   control the implementor/reviewer prompts, so this stays the **authoritative** done
    signal. The worktree uses `.dev3/` already (`dev3 config export` writes
    `.dev3/config.json`; `dev3 install-hooks` installs there) — our `result.json`/
    `review.json` filenames don't collide. Confirm `.dev3/` isn't `.gitignore`d in
@@ -294,7 +294,7 @@ Concretely, prefer (in order):
 
 ---
 
-## Q4 — Producer/grader agent+config registry ✅ ANSWERED (bonus)
+## Q4 — Implementor/reviewer agent+config registry ✅ ANSWERED (bonus)
 
 `AgentSpec = { agent: <agentId>, config: <configId> }`. Real ids (from
 `dev3-server`):
@@ -316,14 +316,14 @@ Installed default (`settings.json`): `defaultAgentId: builtin-claude`,
 `defaultConfigId: claude-default-opus48`, `agentBinaryPaths."builtin-claude":
 /Users/gabik/.local/bin/claude`.
 
-> **PLAN IMPACT (grader config, §8):** there's lots of cross-model choice if you
-> *want* a different-model grader. Recommended (not enforced) default pairing:
-> **producer `builtin-claude`/`claude-default-opus48`**, grader a different model
+> **PLAN IMPACT (reviewer config, §8):** there's lots of cross-model choice if you
+> *want* a different-model reviewer. Recommended (not enforced) default pairing:
+> **implementor `builtin-claude`/`claude-default-opus48`**, reviewer a different model
 > — e.g. `builtin-gemini`/`gemini-default` or `builtin-codex`/`codex-default`.
-> But the producer and grader **may also share the same model/config** (e.g. Opus
-> for both): grader independence comes from the separate `review-by-ai` launch +
+> But the implementor and reviewer **may also share the same model/config** (e.g. Opus
+> for both): reviewer independence comes from the separate `review-by-ai` launch +
 > read-only rubric prompt + re-running checks, not from a distinct `(agent,
-> config)`. So there is **no** boot-time producer≠grader assertion — config just
+> config)`. So there is **no** boot-time implementor≠reviewer assertion — config just
 > validates schema + fills defaults.
 
 ---
@@ -336,7 +336,7 @@ decisions. The overlaps:
 
 | PLAN feature | dev-3.0 already has | Gap dev3-loop still fills |
 |---|---|---|
-| Independent AI grader stage | **`review-by-ai` column auto-runs a review agent.** Moving a task to `review-by-ai` launches `builtinColumnAgents["review-by-ai"]` (default `builtin-claude`/`claude-bypass-sonnet`, `DEFAULT_REVIEW_PROMPT`) in the pane; on exit it self-moves `review-by-ai → review-by-user` via `dev3 task move … --if-status review-by-ai`. | dev-3.0's reviewer is **not independent in the rigorous sense**: it runs *in a pane, can commit fixes itself*, defaults to the **same agent family** (sonnet), has **no structured `review.json`**, and doesn't *re-run mechanical checks as source of truth*. dev3-loop's grader = **read-only**, structured per-criterion verdict, checks re-run (optionally a different model). To avoid double-grading, either disable `builtinColumnAgents["review-by-ai"]` in project config, or run our grader **out-of-band** (fresh invocation / custom column) and treat `review-by-ai` as just a lane. |
+| Independent AI reviewer stage | **`review-by-ai` column auto-runs a review agent.** Moving a task to `review-by-ai` launches `builtinColumnAgents["review-by-ai"]` (default `builtin-claude`/`claude-bypass-sonnet`, `DEFAULT_REVIEW_PROMPT`) in the pane; on exit it self-moves `review-by-ai → review-by-user` via `dev3 task move … --if-status review-by-ai`. | dev-3.0's reviewer is **not independent in the rigorous sense**: it runs *in a pane, can commit fixes itself*, defaults to the **same agent family** (sonnet), has **no structured `review.json`**, and doesn't *re-run mechanical checks as source of truth*. dev3-loop's reviewer = **read-only**, structured per-criterion verdict, checks re-run (optionally a different model). To avoid double-reviewing, either disable `builtinColumnAgents["review-by-ai"]` in project config, or run our reviewer **out-of-band** (fresh invocation / custom column) and treat `review-by-ai` as just a lane. |
 | Merge / PR | **RPCs exist:** `mergeTask`, `pushTask`, `rebaseTask`, `createPullRequest {autoMerge?}`, `openPullRequest`. Plus `MERGE_COMPLETE_ELIGIBLE_STATUSES = [user-questions, review-by-user, review-by-colleague]` and `prepareMergeCompletionPrompt`. | **These are RPC/GUI only — NOT in the `dev3` CLI** (no merge command). So to drive merge we either (a) keep PLAN's design and **drive git ourselves** (`GitPort`, full control, write-ahead, exactly-once — *recommended*), or (b) call the socket RPC `mergeTask`/`createPullRequest` (reuse dev-3.0 logic, but not built for our exactly-once/idempotency model). The plan's "we own git" stance stays the safer default. |
 | Human "PR review" gate | **`review-by-colleague` ("PR Review") status + `peerReviewEnabled` + `githubAuthHost/Login`** — a built-in PR-review lane. | Map PLAN's `open_pr` merge policy onto this lane instead of inventing one. |
 | Atomic lane moves | **`--if-status` / `--if-status-not` compare-and-set, enforced inside the server data-lock.** | Use directly — gives idempotent, race-free moves vs. the human, for free. No need to build our own CAS. |
@@ -345,7 +345,7 @@ decisions. The overlaps:
 
 **Net repositioning:** dev3-loop is *not* "add AI review + merge to dev-3.0" —
 dev-3.0 has rudimentary versions of both. dev3-loop is the **autonomous,
-rigorous, recoverable reconciler**: independent read-only grading
+rigorous, recoverable reconciler**: independent read-only reviewing
 with structured verdicts, mechanical-checks-as-truth, the guardrail/cap/
 oscillation/budget safety net, write-ahead exactly-once merge, level-triggered
 convergence, and *policy-driven* progression — none of which dev-3.0 has. Update
@@ -359,28 +359,28 @@ over `~/.dev3.0/sockets/<pid>.sock` via the CLI's `sendRequest` framing
 ever lacks a verb we need (e.g. merge, custom-column create), the socket is the
 fallback — but it couples us to a running server and the wire format.
 
-## Q5 — Can we reuse dev-3.0's `review-by-ai` as our grader? ✅ YES (with overrides)
+## Q5 — Can we reuse dev-3.0's `review-by-ai` as our reviewer? ✅ YES (with overrides)
 
-**Verdict: reuse it for the M5 grader stage**, via three config overrides; it
-preserves most of PLAN constraint #6 and saves building a separate grader runtime.
+**Verdict: reuse it for the M5 reviewer stage**, via three config overrides; it
+preserves most of PLAN constraint #6 and saves building a separate reviewer runtime.
 
 How it works (from `tmux-pty.ts:launchColumnAgent` + `task-lifecycle.ts:
 triggerColumnAgentIfNeeded` + `shared-pure.ts:buildCmdScript`):
 - Moving a task to `review-by-ai` launches a **fresh** agent
   (`resolveCommandForAgent(agentId, configId, …, {skipSystemPrompt:true})`) in a
-  **new tmux pane** (split-window, 40%) in the worktree — **no producer
+  **new tmux pane** (split-window, 40%) in the worktree — **no implementor
   conversation/scrollback inherited** ✅. Our `agentConfig.prompt` (with
   `{baseBranch}`→`origin/<base>`) is the task description; the diff is not
   auto-injected, so the prompt must run `git diff origin/<base>` itself.
 - The launched agent = `builtinColumnAgents["review-by-ai"]` (per-project config).
   **Default is `builtin-claude`/`claude-bypass-sonnet` + a prompt that says "fix
   medium/high severity directly and commit"** — i.e. a same-family *fixer*, the
-  opposite of an independent read-only grader.
+  opposite of an independent read-only reviewer.
 
 **Reuse requires (else it violates the plan):**
 1. **Override `builtinColumnAgents["review-by-ai"]`** = { an agentId/configId of
    our choosing (a different model is recommended but optional — it may even match
-   the producer's), our adversarial **rubric prompt** that re-runs checks, diffs
+   the implementor's), our adversarial **rubric prompt** that re-runs checks, diffs
    `origin/<base>`, writes `.dev3/review.json`, and says *do not edit* }.
    (Disabling instead: set `builtinColumnAgents` to an object *without* a
    `review-by-ai` key → no agent + no onExit hook → inert lane we fully own. If
@@ -391,23 +391,23 @@ triggerColumnAgentIfNeeded` + `shared-pure.ts:buildCmdScript`):
    review-by-user --if-status review-by-ai`. So `pass` → exits 0 → auto-advances
    to the human gate (desired ✅); `changes_requested` → our loop moves the card
    to `in-progress` first and the auto-move **no-ops** (guard `--if-status
-   review-by-ai` fails) ✅; grader error (non-zero) → drops to a shell, no move →
+   review-by-ai` fails) ✅; reviewer error (non-zero) → drops to a shell, no move →
    stall guardrail catches it ✅. Compatible on the happy path, neutralized on the
    unhappy one.
 
-**What reuse does NOT give (neither does an out-of-band grader):** *hard*
-read-only. The grader runs in the producer's worktree with the config's
+**What reuse does NOT give (neither does an out-of-band reviewer):** *hard*
+read-only. The reviewer runs in the implementor's worktree with the config's
 permission mode; plan-mode would also block it writing `review.json`, so "never
 edits code" stays prompt-level. Real protection = **we re-run checks + git is
 truth**, so a rogue edit can't fake a pass. Optional hardening (either design):
-grade in a throwaway worktree checked out at branch HEAD.
+review in a throwaway worktree checked out at branch HEAD.
 
 **When to go out-of-band instead (PLAN's original §8):** if you need hard input
-isolation (grader sees only a diff, not the repo / `.dev3/progress.md`), full
-routing control without the onExit move, or a headless/no-tmux grader. Keep the
+isolation (reviewer sees only a diff, not the repo / `.dev3/progress.md`), full
+routing control without the onExit move, or a headless/no-tmux reviewer. Keep the
 `RuntimePort` abstraction so this is a swap, not a rewrite.
 
-> **⚠ PLAN IMPACT (§8 grader):** make the grader stage a `RuntimePort` method
+> **⚠ PLAN IMPACT (§8 reviewer):** make the reviewer stage a `RuntimePort` method
 > whose default adapter = "move to `review-by-ai` with overridden
 > `builtinColumnAgents`"; the domain still just emits `LaunchGrader` and reads the
 > `review.json` verdict. Resolve in M4: exact path to set `builtinColumnAgents`
@@ -422,7 +422,7 @@ routing control without the onExit move, or a headless/no-tmux grader. Keep the
 2. **Don't double-review** → moving a task to `review-by-ai` triggers dev-3.0's
    *own* review agent. dev3-loop must either disable
    `builtinColumnAgents["review-by-ai"]` (project config) or keep its independent
-   grader out-of-band. Reconciler must also read `project.autoReviewEnabled` so it
+   reviewer out-of-band. Reconciler must also read `project.autoReviewEnabled` so it
    doesn't fight dev-3.0's stop-target routing. (See overlap §.)
 3. **Merge trigger** → a custom column `ready_to_merge` **with no `agentConfig`**
    is viable and CLI-reachable (`task move --status <colId> --if-status <colId>`);
@@ -438,7 +438,7 @@ routing control without the onExit move, or a headless/no-tmux grader. Keep the
    fields over raw `capture-pane` (hangs on control-mode sessions); timeout-guard
    any direct tmux read.
 7. **acceptanceCriteria** isn't structured — parse from `description` or hand the
-   whole description to the grader.
+   whole description to the reviewer.
 8. **Lane enum** → 8 real statuses incl. `review-by-colleague` ("PR Review");
    `completed`/`cancelled` are observe-only (CLI can't set `cancelled`;
    `completed` is a blocking approval). Map PLAN `open_pr` → `review-by-colleague`.
@@ -451,5 +451,5 @@ routing control without the onExit move, or a headless/no-tmux grader. Keep the
 - Does `getTerminalPreview` RPC avoid the control-mode hang our `capture-pane`
   hit? (decides the heartbeat/scrollback mechanism in M4)
 - Best way to suppress dev-3.0's built-in `review-by-ai` agent per project so it
-  doesn't collide with our independent grader (config flag vs. empty
+  doesn't collide with our independent reviewer (config flag vs. empty
   `builtinColumnAgents` entry).

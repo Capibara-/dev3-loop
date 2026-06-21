@@ -2,7 +2,7 @@
 
 > A headless **reconciler** that wraps the [`dev-3.0`](https://github.com/h0x91b/dev-3.0)
 > Kanban board to run autonomous, human-in-the-middle agentic coding loops:
-> **start → validate → independent grade → (fix-loop) → human gate → merge/deploy**.
+> **start → validate → independent review → (fix-loop) → human gate → merge/deploy**.
 > dev-3.0 keeps doing what it's good at (worktree + tmux isolation per card, human
 > review lanes). This service supplies the autonomy dev-3.0 deliberately leaves out.
 
@@ -22,7 +22,7 @@
 
 dev-3.0 is human-driven by design: a person drags cards between columns, and each move into an active column makes dev-3.0 spin up a git worktree + tmux session running a coding agent. It has **no event bus, no MCP surface, no autonomous execution** — its automation seams are (a) a scriptable `dev3` CLI, (b) JSON state on disk, (c) tmux sessions you can read with `capture-pane` and drive with `send-keys`, and (d) a terminal-bell "needs attention" signal.
 
-`dev3-loop` is a long-running process that uses the board's **columns as a state machine** and reconciles each card toward done: launch the producer, run mechanical checks, invoke a **separate** grader agent, loop fixes under strict guardrails, park at a human gate, then merge per a per-card policy. It is the "bind autonomous execution + merge automation to the runtime layer" step that boards like crabfleet declare as policy but leave unimplemented.
+`dev3-loop` is a long-running process that uses the board's **columns as a state machine** and reconciles each card toward done: launch the implementor, run mechanical checks, invoke a **separate** reviewer agent, loop fixes under strict guardrails, park at a human gate, then merge per a per-card policy. It is the "bind autonomous execution + merge automation to the runtime layer" step that boards like crabfleet declare as policy but leave unimplemented.
 
 ### Positioning vs. dev-3.0's built-ins (post-discovery)
 
@@ -35,13 +35,13 @@ versions of two things this plan once assumed we'd build from scratch:
 
 So dev3-loop is **not** "add AI review + merge to dev-3.0." It is the
 **rigorous, autonomous, recoverable reconciler** dev-3.0 deliberately lacks:
-*independent, read-only grading with a structured verdict*;
+*independent, read-only reviewing with a structured verdict*;
 *mechanical checks as the source of truth*; the *guardrail / cap / oscillation /
 budget safety net*; *write-ahead, exactly-once merge*; *level-triggered
 convergence*; and *policy-driven progression*. We **reuse** dev-3.0's
-`review-by-ai` lane as the launch mechanism for our grader (configured with our
+`review-by-ai` lane as the launch mechanism for our reviewer (configured with our
 read-only rubric prompt — optionally a different model — see §8) rather than reimplementing
-agent launch, and we keep the option to grade out-of-band behind `RuntimePort`.
+agent launch, and we keep the option to review out-of-band behind `RuntimePort`.
 
 ---
 
@@ -52,9 +52,9 @@ agent launch, and we keep the option to grade out-of-band behind `RuntimePort`.
 3. **Level-triggered reconciliation is the source of truth.** `fs.watch` is allowed only as a latency optimization; correctness must come from a periodic full reconcile that re-derives all actions from durable state. Watch events lost during downtime must never cause divergence.
 4. **All effectful actions are idempotent and write-ahead logged.** Record intent before acting, completion after; on restart, intent-without-completion triggers a *reconcile-and-verify*, never a blind retry. `merge` must be exactly-once.
 5. **The orchestrator holds no essential state in RAM.** Counters, attempt history, spend, and signatures live on disk (journal). A crash + restart resumes correctly.
-6. **Producer ≠ grader.** The grading agent is a *different* invocation, fresh context, fed only the diff + criteria + check output — never the producer's conversation. It is read-only (never edits code). Independence comes from this **separate launch + rubric prompt + re-running checks**, *not* from the agent/config being distinct: the producer and grader **may share the same model** (even the same `(agent, config)`). A different grader model is recommended (decorrelated blind spots) but neither required nor enforced.
+6. **Implementor ≠ reviewer.** The reviewing agent is a *different* invocation, fresh context, fed only the diff + criteria + check output — never the implementor's conversation. It is read-only (never edits code). Independence comes from this **separate launch + rubric prompt + re-running checks**, *not* from the agent/config being distinct: the implementor and reviewer **may share the same model** (even the same `(agent, config)`). A different reviewer model is recommended (decorrelated blind spots) but neither required nor enforced.
 7. **"Done" means a merge commit in git**, not a status file and not a board column. Status files and columns are *claims*; git is the unfakeable record.
-8. **Guardrails are safety nets, never the success criterion.** Normal termination = mechanical-green AND grader-pass. Caps exist to bound the abnormal path.
+8. **Guardrails are safety nets, never the success criterion.** Normal termination = mechanical-green AND reviewer-pass. Caps exist to bound the abnormal path.
 
 ---
 
@@ -66,7 +66,7 @@ Hexagonal. A pure **domain core** (no I/O) plus **ports** (interfaces) implement
                   ┌───────────────────────────────────────────┐
                   │                domain core                 │
                   │  reconciler · state machine · guardrails   │
-                  │  policy eval · grader orchestration        │
+                  │  policy eval · reviewer orchestration        │
                   │        (pure, no I/O, fully unit-tested)   │
                   └───────────────▲───────────────▲────────────┘
                                   │ ports          │ ports
@@ -129,10 +129,10 @@ loop forever:
 // blocking human approval) — we read them, never write them.
 export type Lane =
   | "todo"               // backlog
-  | "in-progress"        // producer working (also where fixes loop)
+  | "in-progress"        // implementor working (also where fixes loop)
   | "user-questions"     // blocked / parked for human (also our give-up lane)
-  | "review-by-ai"       // our grader runs here (reuses dev-3.0 column agent, §8)
-  | "review-by-user"     // human gate (post-grader-pass)
+  | "review-by-ai"       // our reviewer runs here (reuses dev-3.0 column agent, §8)
+  | "review-by-user"     // human gate (post-reviewer-pass)
   | "review-by-colleague"// "PR Review" lane — maps to open_pr policy
   | "completed"          // observe-only terminal (human archives)
   | "cancelled";         // observe-only terminal (human cancels)
@@ -160,8 +160,8 @@ export interface CardPolicy {
   maxTotalAttempts: number;       // default 6
   stallMs: number;                // default 600_000 (10 min)
   tokenBudget?: number;           // per-card cap (optional)
-  producer: AgentSpec;
-  grader: AgentSpec;              // may share producer's model/config; independence is by launch+prompt, not config
+  implementor: AgentSpec;
+  reviewer: AgentSpec;              // may share implementor's model/config; independence is by launch+prompt, not config
   checksCmd: string;             // e.g. "bun run test && tsc --noEmit"
 }
 
@@ -174,7 +174,7 @@ export interface Card {
   lane: Lane;              // task.status
   customColumnId?: string | null; // task.customColumnId — set ⇒ overrides lane for routing
   prompt: string;          // task.description (markdown; no structured criteria field)
-  acceptanceCriteria: string[]; // parsed from description, or [] ⇒ grader uses full description
+  acceptanceCriteria: string[]; // parsed from description, or [] ⇒ reviewer uses full description
   policy: CardPolicy;
 }
 
@@ -213,13 +213,13 @@ export interface CardJournal {
  *  Adapters interpret these; the domain never does I/O. */
 export type Action =
   | { kind: "NoOp" }
-  /** Launch the producer. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
+  /** Launch the implementor. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
    *  in-progress` already triggered dev-3.0's `activateTask` (worktree + PTY,
    *  prompt = `task.description`). Carries real work only for an out-of-band
    *  adapter. So `decide()` may emit it next to the move without double-launching. */
   | { kind: "LaunchProducer"; card: Card }
   | { kind: "RunChecks"; card: Card }
-  /** Launch the grader. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
+  /** Launch the reviewer. DEFAULT (in-band) adapter = NO-OP: the `MoveLane →
    *  review-by-ai` already triggered dev-3.0's column agent (with our
    *  `builtinColumnAgents` override, §8/§Q5). Real work only out-of-band. */
   | { kind: "LaunchGrader"; card: Card }
@@ -253,10 +253,10 @@ export type Action =
  * `domain/observation.ts`) and have `reconcile.ts` import it — not in this file.
  */
 export interface Observation {
-  /** `.dev3/result.json` (producer done-signal), or null if absent/unparseable. */
-  result: ProducerResult | null;
-  /** `.dev3/review.json` (grader verdict), or null if absent/unparseable. */
-  review: GraderReview | null;
+  /** `.dev3/result.json` (implementor done-signal), or null if absent/unparseable. */
+  result: ImplementorResult | null;
+  /** `.dev3/review.json` (reviewer verdict), or null if absent/unparseable. */
+  review: Review | null;
   /** Whether the card's tmux session/pane still exists. */
   alive: boolean;
   /** Whether the branch is already merged into base (exactly-once guard). */
@@ -290,16 +290,16 @@ export interface BoardPort {
 
 export interface RuntimePort {                  // tmux + worktree driver
   launchProducer(card: Card, spec: AgentSpec, prompt: string): Promise<void>;
-  /** Launch the independent grader. Default adapter = move to `review-by-ai`
+  /** Launch the independent reviewer. Default adapter = move to `review-by-ai`
    *  with overridden builtinColumnAgents (§8); swappable for out-of-band. */
   launchGrader(card: Card, spec: AgentSpec, prompt: string): Promise<void>;
-  sendFixPrompt(card: Card, text: string): Promise<void>; // into producer's pane
+  sendFixPrompt(card: Card, text: string): Promise<void>; // into implementor's pane
   /** server-mediated pane read (getTerminalPreview RPC); timeout-guarded. §Q3 */
   capture(card: Card): Promise<string | null>;
   isAlive(card: Card): Promise<boolean>;        // session/pane exists
   /** read a status file the agent wrote inside the worktree, or null */
-  readResult(card: Card): Promise<ProducerResult | null>;   // .dev3/result.json
-  readReview(card: Card): Promise<GraderReview | null>;     // .dev3/review.json
+  readResult(card: Card): Promise<ImplementorResult | null>;   // .dev3/result.json
+  readReview(card: Card): Promise<Review | null>;     // .dev3/review.json
 }
 
 export interface GitPort {
@@ -328,7 +328,7 @@ export interface ClockPort { now(): number; }
 export interface ConfigPort { policyFor(card: Card): Promise<CardPolicy>; }
 ```
 
-`CheckResult`, `MergeResult`, `PrResult`, `ProducerResult`, `GraderReview`, `LoopEvent` defined in `src/ports/dto.ts` (schemas in §11).
+`CheckResult`, `MergeResult`, `PrResult`, `ImplementorResult`, `Review`, `LoopEvent` defined in `src/ports/dto.ts` (schemas in §11).
 
 ---
 
@@ -342,9 +342,9 @@ read from `journal.attempts`** — it is the journaled result of a prior `RunChe
 **Action**, *not* a field of `obs`. Running the checks command (`policy.checksCmd`,
 e.g. `bun run test && tsc`) is an expensive effect the core *decides to emit*, never
 an observation gathered every tick. Routing key = the card's
-**custom column if set, else its `lane`**. Critically, the grader **verdict
+**custom column if set, else its `lane`**. Critically, the reviewer **verdict
 (`review.json`) is authoritative, not the lane** — because dev-3.0's hardcoded
-on-exit hook force-advances `review-by-ai → review-by-user` on a clean grader
+on-exit hook force-advances `review-by-ai → review-by-user` on a clean reviewer
 exit (DISCOVERY §Q5). So `decide()` reads the verdict and routes regardless of
 whether the card is still in `review-by-ai` or already nudged to `review-by-user`.
 All `MoveLane` actions carry an `expect` (the lane we believe the card is in) so
@@ -352,20 +352,20 @@ the adapter can issue a guarded `--if-status` compare-and-set move.
 
 | Routing key | Condition | Action |
 |---|---|---|
-| `todo` | promotion budget available (§7, shell gate) | `[MoveLane → in-progress, LaunchProducer]` — the move triggers dev-3.0's `activateTask` (worktree+producer, prompt=`task.description`); `LaunchProducer` is a no-op on the default in-band adapter (Finding #4) |
+| `todo` | promotion budget available (§7, shell gate) | `[MoveLane → in-progress, LaunchProducer]` — the move triggers dev-3.0's `activateTask` (worktree+implementor, prompt=`task.description`); `LaunchProducer` is a no-op on the default in-band adapter (Finding #4) |
 | `todo` | budget exhausted | `[]` (NoOp; shell holds promotion — §7) |
 | `in-progress` | no `result.json`, within `stallMs`, alive | `NoOp` (still working) |
 | `in-progress` | stalled (heartbeat > `stallMs`) / dead | `GiveUp("stall")` → `MoveLane → user-questions` |
 | `in-progress` | `result.json` `status="blocked"`, its `diffHash` **not yet acted on** | `[MoveLane → user-questions, note: blockedQuestion]` — human handoff, **not** `RunChecks`, **not** a failure (don't touch `consecutiveFailures`/caps; not `terminal`). Record a non-counting `blocked` attempt for the `diffHash` so the human's resume isn't bounced straight back (Finding #5/#2) |
 | `in-progress` | `result.json` `status="done"`, its `diffHash` **not yet attempted**, diff non-empty | `RunChecks` (never trust `claimedTestsPass`) |
-| `in-progress` | `result.json` present but its `diffHash` **already acted on** (stale/sticky signal) | `NoOp` — already handled; await the producer's *next* finish (Finding #2) |
+| `in-progress` | `result.json` present but its `diffHash` **already acted on** (stale/sticky signal) | `NoOp` — already handled; await the implementor's *next* finish (Finding #2) |
 | `in-progress` | `result.json` present, diff **empty** (claims done, changed nothing) | `GiveUp("empty-diff")` → `MoveLane → user-questions` |
 | `in-progress` | last journaled attempt **red**, guardrails allow, fix **not yet sent** for it | `SendFixPrompt(findings)` (stay) — the shell already recorded the red `AttemptRecord`, and sets `fixPromptSent` on dispatch |
-| `in-progress` | last journaled attempt **red**, guardrails allow, `fixPromptSent` already set | `NoOp` — fix already delivered for this attempt; await the producer's next finish (this is the §6 sticky-result NoOp realized via `AttemptRecord.fixPromptSent`, Finding #2). Guardrails (incl. time-based stall) are still re-checked first, so a producer that then goes silent still gives up |
+| `in-progress` | last journaled attempt **red**, guardrails allow, `fixPromptSent` already set | `NoOp` — fix already delivered for this attempt; await the implementor's next finish (this is the §6 sticky-result NoOp realized via `AttemptRecord.fixPromptSent`, Finding #2). Guardrails (incl. time-based stall) are still re-checked first, so a implementor that then goes silent still gives up |
 | `in-progress` | last journaled attempt **red** & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
 | `in-progress` | last journaled attempt **green** | `[MoveLane → review-by-ai, LaunchGrader]` — the move triggers dev-3.0's column agent; `LaunchGrader` is a no-op on the default in-band adapter (§8) |
-| `review-by-ai` / `review-by-user` | no `review.json` yet, grader alive | `NoOp` |
-| `review-by-ai` / `review-by-user` | `review.json`=`changes_requested`, its `diffHash` not yet acted on, guardrails allow | `[MoveLane → in-progress, SendFixPrompt]` — move is `active→active` so dev-3.0 does **not** respawn (Finding #4); the still-alive producer pane gets the fix (or `--resume`, §8). The `--if-status review-by-ai` guard also no-ops dev-3.0's on-exit auto-advance. Edge-detected by `diffHash` so a sticky `review.json` doesn't re-send (Finding #2) |
+| `review-by-ai` / `review-by-user` | no `review.json` yet, reviewer alive | `NoOp` |
+| `review-by-ai` / `review-by-user` | `review.json`=`changes_requested`, its `diffHash` not yet acted on, guardrails allow | `[MoveLane → in-progress, SendFixPrompt]` — move is `active→active` so dev-3.0 does **not** respawn (Finding #4); the still-alive implementor pane gets the fix (or `--resume`, §8). The `--if-status review-by-ai` guard also no-ops dev-3.0's on-exit auto-advance. Edge-detected by `diffHash` so a sticky `review.json` doesn't re-send (Finding #2) |
 | `review-by-ai` / `review-by-user` | `review.json`=`changes_requested` & guardrail trips | `GiveUp(reason)` → `MoveLane → user-questions` |
 | `review-by-ai` | `review.json`=`pass` | `MoveLane → review-by-user` (let the human gate hold; or let the on-exit hook do it) |
 | `review-by-user` | `review.json`=`pass`, human hasn't acted | `NoOp` (human gate) |
@@ -386,7 +386,7 @@ worktree). "Done" = the merge commit in git (constraint #7), not the column.
 Merge-policy dispatch at the human gate:
 - `open_pr` → `OpenPr` (gh), then park (human merges on GitHub / it sits in `review-by-colleague`).
 - `merge_when_green` → require last checks green, `Merge`.
-- `fix_until_green_and_merge` → the in-progress/grader fix-loop already enforced green+pass; `Merge`.
+- `fix_until_green_and_merge` → the in-progress/reviewer fix-loop already enforced green+pass; `Merge`.
 
 **Merge model (Finding #9, M6 — design now, build later).** Default merge = **push +
 `gh pr merge`**, so GitHub merges server-side: no local checkout of base, the user's
@@ -425,8 +425,8 @@ stop reconciling.
 - **Stall:** `now - lastHeartbeatAt > stallMs` with no new output. Heartbeat source order (DISCOVERY §Q3): `getTerminalPreview` RPC delta → worktree file mtime → `task.updatedAt`/`movedAt` → raw `capture-pane` (timeout-guarded only; it hangs on control-mode sessions).
 - **Per-card budget:** `totalTokens > tokenBudget`. **Source (Finding #8, confirmed):**
   not dev-3.0's `logs/` (empty) — the **agent transcript** `~/.claude/projects/<enc(worktreePath)>/<sessionId>.jsonl`, `sessionId` from `task.sessionState.panes[]`,
-  summing per-turn `message.usage`. **Claude-specific** (a non-Claude grader needs its
-  own reader; the producer defaults to Claude); prefer **token-denominated** budgets —
+  summing per-turn `message.usage`. **Claude-specific** (a non-Claude reviewer needs its
+  own reader; the implementor defaults to Claude); prefer **token-denominated** budgets —
   a `$` ceiling needs a per-model pricing table. Read via an M4 usage adapter; the shell
   folds it into `AttemptRecord.tokensSpent`/`totalTokens`. Inert until that adapter ships.
 
@@ -452,38 +452,38 @@ On give-up: `MoveLane → user_questions`, `addNote` the diagnostic (`attempt n/
 
 ---
 
-## 8. The independent grader (`src/domain/grader.ts` + runtime)
+## 8. The independent reviewer (`src/domain/reviewer.ts` + runtime)
 
 **Default launch mechanism = reuse dev-3.0's `review-by-ai` column agent**
-(DISCOVERY §Q5), not a hand-rolled grader runtime. Moving a card to
+(DISCOVERY §Q5), not a hand-rolled reviewer runtime. Moving a card to
 `review-by-ai` makes dev-3.0 spawn a *fresh* agent (new pane, `skipSystemPrompt`,
-**no producer conversation inherited**) running `builtinColumnAgents[
+**no implementor conversation inherited**) running `builtinColumnAgents[
 "review-by-ai"]`. We must **override that config per repo** to:
 1. **a model + permission mode of our choosing** (a different model than the
-   producer is *recommended* for decorrelated review, e.g. producer
-   `claude-default-opus48`, grader `gemini-default` / `codex-default`, but **not
+   implementor is *recommended* for decorrelated review, e.g. implementor
+   `claude-default-opus48`, reviewer `gemini-default` / `codex-default`, but **not
    required**) — never leave it unset (the default is a same-family *fixer* that
    edits & commits);
 2. **our adversarial rubric prompt** (see §11) that re-runs the checks itself,
    diffs `origin/<base>`, writes `.dev3/review.json`, and is told **not to edit**.
 
 Rules that still hold:
-- Spawned only **after** mechanical checks pass (never grade non-compiling output).
-- `policy.grader` and `policy.producer` are configured independently but **may
+- Spawned only **after** mechanical checks pass (never review non-compiling output).
+- `policy.reviewer` and `policy.implementor` are configured independently but **may
   share the same agent/config** (e.g. Opus for both). A *different model* is
   recommended but **not** enforced — model diversity is the least load-bearing
   independence property; the guarantees that actually matter are the rules in this
   list (checks-re-run, no inherited conversation, structured verdict).
 - Input = acceptance criteria (or full description) + `git diff origin/<base>` +
-  check output. No producer conversation/scrollback.
+  check output. No implementor conversation/scrollback.
 - Read-only is **prompt-level**, not enforced (plan-mode would block writing
   `review.json`). The real guarantee is constraint #8: **we re-run checks and git
-  is truth**, so a rogue edit can't fake a pass. Optional hardening: grade in a
+  is truth**, so a rogue edit can't fake a pass. Optional hardening: review in a
   throwaway worktree checked out at branch HEAD.
 - Output: `.dev3/review.json` with a per-criterion verdict. **The verdict, not the
   lane, drives routing** (§6) — the reconciler reads it even after dev-3.0's
   on-exit hook nudges the card to `review-by-user`. `changes_requested` routes
-  findings back to the **producer's** session (producer keeps context for the fix).
+  findings back to the **implementor's** session (implementor keeps context for the fix).
 
 `RuntimePort.launchGrader(card)` is the seam: the default adapter performs the
 `review-by-ai` move (with overridden config); an **out-of-band** adapter (fresh
@@ -497,16 +497,16 @@ alternative the domain never sees — `decide()` only ever emits `LaunchGrader`.
 - **Journal:** one JSON file per card under `${stateDir}/journal/<cardId>.json`. Atomic writes (write tmp, `rename`).
 - **Event log:** append-only NDJSON at `${stateDir}/events.ndjson`. Every intent/done pair, every lane move, every guardrail trip. It is an **audit/observability trace** (powers `replay` + the OPERATIONS story) — **not** a source of truth. The **journal is the single source of truth for state**; we do **not** maintain a "journal is rebuildable from the log" invariant (Finding #10). Correctness rests on the journal's `pending` write-ahead + reality-checks, not on event replay. (If a concrete journal-reconstruction need ever arises, add a replayer then — for that scenario, not as a standing invariant every write must uphold.)
 - **Write-ahead for effects:** before `Merge`/`OpenPr`, set `journal.pending[actionId] = {kind, startedAt}` and append intent; after success, clear and append done. On startup, for each `pending` entry, **verify reality** (`git.isMerged`, PR exists?) and reconcile — never blind-retry. Note (Finding #9): `isMerged` here must be **content/PR-aware** (squash safety), and a still-`pending` `Merge` under `gh pr merge --auto` is **not** a failure — auto-merge may simply not have fired yet, so re-poll the PR state rather than re-initiating.
-- **The shell folds every evaluation into an `AttemptRecord` — both `RunChecks` results AND grader verdicts.** A grader `changes_requested` is folded as a **red** attempt for that head (it is a failure; it feeds `consecutiveFailures` and the §7 circuit breaker). This is load-bearing for `decide()`: the in-progress branch routes fix-vs-regrade purely off the last attempt's outcome, so if a grader rejection were *not* recorded as red, a bounced card would read as still-`green` and ping-pong straight back to the grader. When the shell dispatches a `SendFixPrompt` (mechanical-red path **or** the grader-rejection bounce, which carries one), it sets `fixPromptSent` on that attempt — giving exactly-once fix delivery (§6).
+- **The shell folds every evaluation into an `AttemptRecord` — both `RunChecks` results AND reviewer verdicts.** A reviewer `changes_requested` is folded as a **red** attempt for that head (it is a failure; it feeds `consecutiveFailures` and the §7 circuit breaker). This is load-bearing for `decide()`: the in-progress branch routes fix-vs-regrade purely off the last attempt's outcome, so if a reviewer rejection were *not* recorded as red, a bounced card would read as still-`green` and ping-pong straight back to the reviewer. When the shell dispatches a `SendFixPrompt` (mechanical-red path **or** the reviewer-rejection bounce, which carries one), it sets `fixPromptSent` on that attempt — giving exactly-once fix delivery (§6).
 - **Crash test is a first-class requirement** (see §14): kill between intent and done, restart, assert exactly-once.
 
 ---
 
 ## 10. Agent prompt contracts (`src/prompts/*.md`, schemas in `dto.ts`)
 
-**Injection gap (Finding #4(A)):** dev-3.0 launches the producer with the raw
-`task.description` as prompt — there is **no per-project producer-prompt override**
-(unlike the grader's `builtinColumnAgents`). So this protocol can't ride in on the
+**Injection gap (Finding #4(A)):** dev-3.0 launches the implementor with the raw
+`task.description` as prompt — there is **no per-project implementor-prompt override**
+(unlike the reviewer's `builtinColumnAgents`). So this protocol can't ride in on the
 launch. Default resolution: commit it to the **repo's `AGENTS.md`/prompt file** (the
 agent runs in the worktree and reads it); the out-of-band adapter can inject it
 directly. Confirm the mechanism in M5.
@@ -514,11 +514,11 @@ directly. Confirm the mechanism in M5.
 **"Stop" must mean idle, not exit (Finding #4(B)):** the pane is launched
 `keepShell:true`, so if the agent process exits the pane becomes a bare shell and
 `sendFixPrompt`'s send-keys would type into bash. The fix loop therefore requires the
-producer to stay an **interactive, idle** process, or the adapter to relaunch with
+implementor to stay an **interactive, idle** process, or the adapter to relaunch with
 `--resume <sessionId>` (dev-3.0 stores the id). Re-entry to `in-progress` does **not**
-respawn (active→active), so we own keeping the producer reachable.
+respawn (active→active), so we own keeping the implementor reachable.
 
-Producer launch prompt appends a fixed protocol:
+Implementor launch prompt appends a fixed protocol:
 - Maintain `.dev3/progress.md` (tried / failed-because / next / invariants) and re-read it on resume.
 - On finish, write `.dev3/result.json` and go idle (do **not** exit the process):
 
@@ -536,7 +536,7 @@ the note, never run checks, never burn the failure caps, never mark `terminal`. 
 human answers and drags the card back to `in-progress` to resume. (Edge-detect the
 blocked `diffHash` so the resume isn't immediately re-parked — Finding #2.)
 
-Grader prompt (separate model, read-only, adversarial):
+Reviewer prompt (separate model, read-only, adversarial):
 ```jsonc
 // .dev3/review.json
 { "verdict": "pass" | "changes_requested",
@@ -547,13 +547,13 @@ Grader prompt (separate model, read-only, adversarial):
 
 Failure signature = stable hash of the sorted failing-test ids (fallback: normalized first error line). Best-effort across arbitrary `checksCmd` output — may be `undefined`, and the no-progress guardrail must tolerate that (Finding #11a, §7).
 
-**Diff hash** = hash of `git diff base...branch`, recorded on **every** `AttemptRecord`. Beyond oscillation detection it is the **edge-detector** that stops the level-triggered loop re-firing on a *sticky* `result.json` (Finding #2): `result.json` is never deleted by the producer, so under level-triggering `decide()` would re-run checks and re-`SendFixPrompt` every tick while the producer is still mid-fix. Rule: **`decide()` acts on a present `result.json` only when its `diffHash` is not already the `diffHash` of a recorded attempt.** Once an attempt is journaled for a given diff, that finished-state is ignored (`NoOp`) until the producer changes the code and re-announces done (new diff ⇒ new `diffHash` ⇒ exactly one new attempt). This is **orchestrator-side** — we do *not* trust the agent to clear `result.json` (same reason we never trust `claimedTestsPass`). A present `result.json` over an **empty** diff is the degenerate "done but changed nothing" → `GiveUp`. The same `diffHash` recurring across *different* attempts is the oscillation signal (§7).
+**Diff hash** = hash of `git diff base...branch`, recorded on **every** `AttemptRecord`. Beyond oscillation detection it is the **edge-detector** that stops the level-triggered loop re-firing on a *sticky* `result.json` (Finding #2): `result.json` is never deleted by the implementor, so under level-triggering `decide()` would re-run checks and re-`SendFixPrompt` every tick while the implementor is still mid-fix. Rule: **`decide()` acts on a present `result.json` only when its `diffHash` is not already the `diffHash` of a recorded attempt.** Once an attempt is journaled for a given diff, that finished-state is ignored (`NoOp`) until the implementor changes the code and re-announces done (new diff ⇒ new `diffHash` ⇒ exactly one new attempt). This is **orchestrator-side** — we do *not* trust the agent to clear `result.json` (same reason we never trust `claimedTestsPass`). A present `result.json` over an **empty** diff is the degenerate "done but changed nothing" → `GiveUp`. The same `diffHash` recurring across *different* attempts is the oscillation signal (§7).
 
 ---
 
 ## 11. Configuration
 
-- **Per-repo policy file** `CRABBOX.md` (or `.dev3-loop.yaml`) at repo root, YAML frontmatter: `merge.default_policy`, `cap`, `stall_ms`, `producer`, `grader`, `checks`. `ConfigPort.policyFor(card)` evaluates repo defaults then per-card overrides (from card labels/description).
+- **Per-repo policy file** `CRABBOX.md` (or `.dev3-loop.yaml`) at repo root, YAML frontmatter: `merge.default_policy`, `cap`, `stall_ms`, `implementor`, `reviewer`, `checks`. `ConfigPort.policyFor(card)` evaluates repo defaults then per-card overrides (from card labels/description).
 - **Env / `config.json`:** `stateDir`, `dev3StorePath` (DISCOVERY §18), `dev3Bin` (path to `dev3`), `tickIntervalMs`, `concurrencyCap`, `dailySpendCeiling`, `defaultPolicy`.
 - Validate config at boot with a small schema; fail fast with a readable error.
 
@@ -564,7 +564,7 @@ Failure signature = stable hash of the sorted failing-test ids (fallback: normal
 ```
 dev3-loop/
 ├── src/
-│   ├── domain/        # PURE: types, reconcile, guardrails, grader, fleet, hashing
+│   ├── domain/        # PURE: types, reconcile, guardrails, reviewer, fleet, hashing
 │   ├── ports/         # interfaces + dto.ts (no impls)
 │   ├── adapters/
 │   │   ├── dev3/      # Dev3CliBoard (CLI mutate) + Dev3JsonReader (read store)
@@ -574,10 +574,10 @@ dev3-loop/
 │   ├── app/           # composition root: wires ports→adapters, runs the loop
 │   └── cli.ts         # `dev3-loop run | dry-run | replay | preflight`
 ├── tests/
-│   ├── unit/          # decide(), guardrails, grader routing — Fake* ports
+│   ├── unit/          # decide(), guardrails, reviewer routing — Fake* ports
 │   ├── recovery/      # crash/idempotency/replay
 │   └── integration/   # real git in tmpdir; real tmux (tagged, skip if absent)
-├── prompts/           # producer/grader prompt templates
+├── prompts/           # implementor/reviewer prompt templates
 ├── docs/              # ARCHITECTURE.md, POLICY.md, OPERATIONS.md
 ├── AGENTS.md          # conventions for agents working on THIS repo
 ├── README.md
@@ -592,9 +592,9 @@ Core principle: **the domain is pure, so it's tested with zero I/O.** Adapters a
 
 Mandatory unit tests (`tests/unit`):
 1. `decide()` returns the correct `Action[]` for **every** row of the §6 transition table (table-driven; `[]` = NoOp, order asserted for compound rows).
-2. Producer self-report is ignored: `result.json.claimedTestsPass=true` but `runChecks` red ⇒ red path.
-3. Config boot: a valid config loads (defaults filled); schema violations fail fast with a readable error; producer and grader may share the same agent/config (no independence boot error).
-4. Grader only launches after green; non-compiling output never reaches `ai_review`.
+2. Implementor self-report is ignored: `result.json.claimedTestsPass=true` but `runChecks` red ⇒ red path.
+3. Config boot: a valid config loads (defaults filled); schema violations fail fast with a readable error; implementor and reviewer may share the same agent/config (no independence boot error).
+4. Reviewer only launches after green; non-compiling output never reaches `ai_review`.
 5. Guardrails: each of the six predicates trips on its own fixture and not otherwise; consecutive-failure resets on green; no-progress trips on repeated signature; oscillation trips on repeated diff hash.
 6. Fleet: concurrency cap blocks promotion; spend ceiling drains; breaker opens >50% fail rate.
 7. Human override: drag from `user_questions → in_progress` resets consecutiveFailures, not totalAttempts; drag to `cancelled` is terminal.
@@ -632,7 +632,7 @@ CI: `bun install && tsc --noEmit && vitest run` (unit + recovery always; integra
 - **M2 — persistence + recovery.** FsJournal (atomic), NdjsonEventLog, write-ahead, replay. Tests 9–11.
 - **M3 — guardrails + fleet.** All predicates + caps + breaker — fills in the M1 promotion-gate seam with real fleet *policy* (concurrency cap, daily-spend ceiling, circuit breaker, §7). Tests 5, 6.
 - **M4 — real adapters behind ports.** `GitCli`, `TmuxRuntime`, `Dev3JsonReader`, `Dev3CliBoard`. Mark CLI/store assumptions `// DISCOVERY`. Tests 12–14.
-- **M5 — grader stage.** Separate-model launch, review.json, findings routing. Extend unit tests.
+- **M5 — reviewer stage.** Separate-model launch, review.json, findings routing. Extend unit tests.
 - **M6 — merge-policy execution.** OpenPr/Merge, merge-before-teardown ordering, exactly-once. Recovery test 9 against real git.
 - **M7 — docs + dry-run E2E.** `dry-run` that logs intended actions without mutating. Fill all docs.
 
@@ -671,9 +671,9 @@ six design deltas that must be folded in **before M1**:
    review agent** when a card enters `review-by-ai`, and ships `mergeTask`/
    `createPullRequest` RPCs and a `review-by-colleague` ("PR Review") lane. So
    dev3-loop must position as the *rigorous autonomous reconciler* (independent
-   read-only grader, checks-as-truth, guardrails, write-ahead
+   read-only reviewer, checks-as-truth, guardrails, write-ahead
    exactly-once, level-triggered) and must **disable/​bypass
-   `builtinColumnAgents["review-by-ai"]`** (or grade out-of-band) so the two
+   `builtinColumnAgents["review-by-ai"]`** (or review out-of-band) so the two
    reviewers don't collide. The `ready_to_merge` merge-trigger **is viable** — a
    custom column with no `agentConfig`, moved into via `task move --status
    <columnId>` (custom-column moves ARE CLI-reachable; only *creating* a column is
@@ -691,11 +691,11 @@ six design deltas that must be folded in **before M1**:
    `capture-pane`/`list-windows` **hang** on attached control-mode sessions →
    timeout-guard all pane reads; prefer file signals for correctness.
 6. **AgentSpec = {agentId, configId}** with a rich registry (claude/codex/gemini/
-   cursor/opencode). Recommended (not enforced) default pairing: producer
-   `builtin-claude`/`claude-default-opus48`, grader a different model (e.g.
+   cursor/opencode). Recommended (not enforced) default pairing: implementor
+   `builtin-claude`/`claude-default-opus48`, reviewer a different model (e.g.
    `builtin-gemini`/`gemini-default`); the boot assert only requires a distinct
    `(agent, config)`. acceptanceCriteria isn't structured — parse
-   from `description` or pass the whole description to the grader.
+   from `description` or pass the whole description to the reviewer.
 
 ---
 
@@ -720,7 +720,7 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   `MergePolicy`, `AgentSpec`, `CardPolicy`, `Card`, `AttemptRecord`,
   `CardJournal`, `Action` (TSDoc each variant). Gate: tsc + type-level test. (dep: T1)
 - **T5 Ports + DTOs.** `src/ports/*.ts` + `dto.ts`: all 7 ports, `CheckResult`/
-  `MergeResult`/`PrResult`/`ProducerResult`/`GraderReview`/`LoopEvent`. TSDoc.
+  `MergeResult`/`PrResult`/`ImplementorResult`/`Review`/`LoopEvent`. TSDoc.
   No impls. (dep: T4)
 - **T6 Fake adapters.** in-memory `FakeBoard`/`FakeRuntime`/`FakeGit`/
   `FakeJournal`/`FakeEventLog`/`FixedClock`/`FakeConfig` for tests. (dep: T5)
@@ -734,7 +734,7 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   caps (M3) — stub the predicate as `allow`. (dep: T4,T5)
 - **T8 `decide()` table tests.** table-driven **every §6 row** → asserted ordered
   `Action[]` (`[]`=NoOp; order checked for compound rows). Red/green seeded via
-  `journal.attempts`, never `obs`. Producer self-report ignored (red wins); grader
+  `journal.attempts`, never `obs`. Implementor self-report ignored (red wins); reviewer
   only after green; sticky `result.json`/`review.json` + `fixPromptSent` ⇒ NoOp
   (exactly-once, Finding #2); empty-diff ⇒ `GiveUp`; unmanaged custom column ⇒ `[]`
   (Finding #6a); merge `expect` guard (Finding #7); merge-policy dispatch; human
@@ -743,21 +743,21 @@ Each task = one small, focused, self-reviewable commit. `tsc --noEmit` clean +
   1,2,4,7,8. (dep: T6,T7)
 - **T9 Config boot + validation.** `src/app/config.ts` + `ConfigPort` fake: load
   config + per-repo policy, defaults, schema-validated **fail-fast** with readable
-  errors. Producer and grader may share the same agent/config — independence is by
+  errors. Implementor and reviewer may share the same agent/config — independence is by
   launch+prompt, not config (test 3). (dep: T5)
 - **T10 Composition root + tick loop.** `src/app/loop.ts`: wire ports→fakes.
   `tick()` per amended §3: per-tick `promotionBudget` pre-pass (shell-side fleet
   gate, Finding #3 — stubbed seam in M1; full caps/breaker are M3) → per card
   `observe()` (cheap idempotent reads) → `decide()→Action[]` executed **in order**,
   per-action write-ahead (intent→execute→fold result into journal→done). Shell folds
-  `RunChecks` results (M1 happy path) — and, as the fix-loop is wired, grader
+  `RunChecks` results (M1 happy path) — and, as the fix-loop is wired, reviewer
   verdicts → `AttemptRecord`s, setting `fixPromptSent` on `SendFixPrompt` dispatch
   (§9). Event log = audit trace; journal = single source of truth (Finding #10).
   Level-triggered runner; `dry-run` mutates nothing. Test: N ticks drive a fake card
   `todo → … → review-by-user`. (dep: T6,T7,T9)
 
 Later milestones (M2 persistence/recovery, M3 guardrails/fleet, M4 real adapters,
-M5 grader, M6 merge, M7 docs/dry-run) get their own task cards once M1 is green —
+M5 reviewer, M6 merge, M7 docs/dry-run) get their own task cards once M1 is green —
 created just-in-time to avoid a stale backlog.
 
 **Bootstrap prerequisite (not a dev-3.0 task — must be done first):** the repo

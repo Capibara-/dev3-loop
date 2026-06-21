@@ -1,5 +1,5 @@
 /**
- * Config boot + validation (T9 — PLAN.md §11).
+ * Config boot + validation.
  *
  * Loads the global config (state dir, store path, dev3 binary, tick interval,
  * concurrency cap, daily spend ceiling, default policy) and resolves the
@@ -7,11 +7,11 @@
  * overrides**. Everything is schema-validated and **fails fast** at boot with a
  * readable {@link ConfigError}.
  *
- * The producer and grader are configured independently (`policy.producer` /
- * `policy.grader`) and **may share a model** — independence comes from the
- * grader's separate, fresh launch (`review-by-ai`), its read-only rubric prompt,
- * and re-running mechanical checks (constraint #8), not from the `(agent, config)`
- * pair being distinct. A different grader model is recommended (decorrelated
+ * The implementor and reviewer are configured independently (`policy.implementor` /
+ * `policy.reviewer`) and **may share a model** — independence comes from the
+ * reviewer's separate, fresh launch (`review-by-ai`), its read-only rubric prompt,
+ * and re-running mechanical checks, not from the `(agent, config)`
+ * pair being distinct. A different reviewer model is recommended (decorrelated
  * blind spots) but neither required nor enforced.
  *
  * **Purity boundary:** parse + validate ({@link parseGlobalConfig},
@@ -33,21 +33,21 @@ declare const Bun: { file(path: string): { text(): Promise<string> } };
 
 // --- defaults -------------------------------------------------------------
 
-/** Global-config defaults applied when a field is omitted (PLAN §11). */
+/** Global-config defaults applied when a field is omitted. */
 export const CONFIG_DEFAULTS = {
-  /** dev-3.0 JSON store root (DISCOVERY §18 / §Q-store). */
+  /** dev-3.0 JSON store root. */
   dev3StorePath: "~/.dev3.0",
   /** Path/name of the `dev3` CLI binary used to mutate the board. */
   dev3Bin: "dev3",
   /** Reconcile-loop period in ms. */
   tickIntervalMs: 5_000,
-  /** Fleet-wide live-card cap (PLAN §7; full policy is M3). */
+  /** Fleet-wide live-card cap (full policy lands later). */
   concurrencyCap: 20,
-  /** Daily spend ceiling; `Infinity` ⇒ no ceiling (PLAN §7; enforcement is M3). */
+  /** Daily spend ceiling; `Infinity` ⇒ no ceiling (enforcement lands later). */
   dailySpendCeiling: Number.POSITIVE_INFINITY,
 } as const;
 
-/** Per-card guardrail-cap defaults applied when a policy omits them (PLAN §4/§7). */
+/** Per-card guardrail-cap defaults applied when a policy omits them. */
 export const POLICY_DEFAULTS = {
   maxConsecutiveFailures: 3,
   maxTotalAttempts: 6,
@@ -135,13 +135,13 @@ function parseTokenBudget(v: unknown, where: string): number {
 
 /**
  * Validate a **complete** {@link CardPolicy} (the global `defaultPolicy`):
- * `merge`, `producer`, `grader`, `checksCmd` are required; the guardrail caps
+ * `merge`, `implementor`, `reviewer`, `checksCmd` are required; the guardrail caps
  * default from {@link POLICY_DEFAULTS} when omitted.
  */
 export function parseCardPolicy(v: unknown, where: string): CardPolicy {
   const o = asObject(v, where);
-  const producer = parseAgentSpec(o["producer"], `${where}.producer`);
-  const grader = parseAgentSpec(o["grader"], `${where}.grader`);
+  const implementor = parseAgentSpec(o["implementor"], `${where}.implementor`);
+  const reviewer = parseAgentSpec(o["reviewer"], `${where}.reviewer`);
   const checksCmd = strOr(o["checksCmd"], "", `${where}.checksCmd`);
   if (checksCmd.length === 0) {
     throw new ConfigError(`${where}.checksCmd must be a non-empty string`);
@@ -159,8 +159,8 @@ export function parseCardPolicy(v: unknown, where: string): CardPolicy {
       `${where}.maxTotalAttempts`,
     ),
     stallMs: posIntOr(o["stallMs"], POLICY_DEFAULTS.stallMs, `${where}.stallMs`),
-    producer,
-    grader,
+    implementor,
+    reviewer,
     checksCmd,
   };
   const tokenBudget = o["tokenBudget"];
@@ -188,8 +188,8 @@ export function parsePolicyOverrides(v: unknown, where: string): PolicyOverrides
   }
   if (o["stallMs"] !== undefined) out.stallMs = posInt(o["stallMs"], `${where}.stallMs`);
   if (o["tokenBudget"] !== undefined) out.tokenBudget = parseTokenBudget(o["tokenBudget"], `${where}.tokenBudget`);
-  if (o["producer"] !== undefined) out.producer = parseAgentSpec(o["producer"], `${where}.producer`);
-  if (o["grader"] !== undefined) out.grader = parseAgentSpec(o["grader"], `${where}.grader`);
+  if (o["implementor"] !== undefined) out.implementor = parseAgentSpec(o["implementor"], `${where}.implementor`);
+  if (o["reviewer"] !== undefined) out.reviewer = parseAgentSpec(o["reviewer"], `${where}.reviewer`);
   if (o["checksCmd"] !== undefined) {
     const cmd = o["checksCmd"];
     if (typeof cmd !== "string" || cmd.length === 0) {
@@ -217,8 +217,8 @@ export function resolvePolicy(
     if (o.maxTotalAttempts !== undefined) merged.maxTotalAttempts = o.maxTotalAttempts;
     if (o.stallMs !== undefined) merged.stallMs = o.stallMs;
     if (o.tokenBudget !== undefined) merged.tokenBudget = o.tokenBudget;
-    if (o.producer !== undefined) merged.producer = o.producer;
-    if (o.grader !== undefined) merged.grader = o.grader;
+    if (o.implementor !== undefined) merged.implementor = o.implementor;
+    if (o.reviewer !== undefined) merged.reviewer = o.reviewer;
     if (o.checksCmd !== undefined) merged.checksCmd = o.checksCmd;
   }
   return merged;
@@ -228,8 +228,8 @@ export function resolvePolicy(
 const CARD_OVERRIDE_FENCE = /```dev3-loop\s*\n([\s\S]*?)```/;
 
 /**
- * Extract per-card policy overrides from a card's description (PLAN §11: "per-card
- * overrides from card labels/description"). A card may embed a fenced
+ * Extract per-card policy overrides from a card's description (per-card overrides
+ * from card labels/description). A card may embed a fenced
  * ```dev3-loop``` block of JSON overrides; absent ⇒ `{}`. Pure — operates on the
  * already-loaded {@link Card.prompt}.
  */
@@ -249,7 +249,7 @@ export function parseCardPolicyOverrides(card: Card): PolicyOverrides {
 
 // --- global config --------------------------------------------------------
 
-/** The fully-validated global configuration (PLAN §11). */
+/** The fully-validated global configuration. */
 export interface GlobalConfig {
   /** Where the journal + event log live (required; no default). */
   stateDir: string;
@@ -272,8 +272,8 @@ export interface GlobalConfig {
 /**
  * Validate a raw (already-JSON-parsed) global-config object. Fills defaults,
  * **fails fast** with a readable {@link ConfigError} on any schema violation, and
- * runs the producer≠grader assertion against the default policy **and** every
- * repo-resolved policy (PLAN §8/§11). Pure — no I/O.
+ * runs the implementor≠reviewer assertion against the default policy **and** every
+ * repo-resolved policy. Pure — no I/O.
  */
 export function parseGlobalConfig(raw: unknown): GlobalConfig {
   const o = asObject(raw, "config");

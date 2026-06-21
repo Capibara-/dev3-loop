@@ -1,18 +1,18 @@
 #!/usr/bin/env bun
 /**
- * `dev3-loop` CLI entrypoint (M0/T2 — PLAN.md §12).
+ * `dev3-loop` CLI entrypoint.
  *
  * Argument parsing lives in the pure {@link parseArgs} so it is unit-testable
  * without touching `process`/`Bun`.
  *
- * **Wiring status (M1, T10).** `run`/`dry-run` are the front door to the
+ * **Wiring status.** `run`/`dry-run` are the front door to the
  * reconcile loop: the composition root + interval runner + dry-run mode are
  * implemented and exercised against in-memory Fakes (`startReconciler` in
  * {@link module:app/loop}; see the loop tests). They cannot run end-to-end yet
- * because the **real dev-3.0 adapters land in M4** (board/runtime/git/journal)
- * and the dry-run E2E is M7 (PLAN §15/§16) — so the CLI commands still report
- * "not implemented yet" while the loop core they will drive is done. `replay` is
- * M2 and `preflight` is M4.
+ * because the **real dev-3.0 adapters** (board/runtime/git/journal) and the
+ * dry-run E2E land later — so the CLI commands still report
+ * "not implemented yet" while the loop core they will drive is done. `replay`
+ * and `preflight` land later too.
  */
 
 // The repo's tsconfig keeps `types: []`, so Node/Bun globals are not in scope.
@@ -30,7 +30,7 @@ declare global {
   }
 }
 
-/** Subcommands the loop will eventually expose (PLAN.md §12). */
+/** Subcommands the loop will eventually expose. */
 export const SUBCOMMANDS = ["run", "dry-run", "replay", "preflight"] as const;
 export type Subcommand = (typeof SUBCOMMANDS)[number];
 
@@ -52,8 +52,8 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
 
 /**
  * Per-command status line printed when a subcommand is invoked. The loop core
- * `run`/`dry-run` will drive is implemented (T10); the missing piece is the real
- * dev-3.0 adapters (M4) — so each still reports "not implemented yet" with the
+ * `run`/`dry-run` will drive is implemented; the missing piece is the real
+ * dev-3.0 adapters — so each still reports "not implemented yet" with the
  * milestone that unblocks it.
  */
 const SUBCOMMAND_STATUS: Record<Subcommand, string> = {

@@ -1,5 +1,5 @@
 /**
- * Composition-root + tick-loop tests (T10, PLAN §3/§6/§9, §13 acceptance).
+ * Composition-root + tick-loop tests.
  *
  * The whole loop runs against the in-memory Fakes — **no real I/O**. Three
  * acceptance proofs from the task:
@@ -8,7 +8,7 @@
  *  2. the promotion-gate seam: budget = 1 with 2 todo cards ⇒ only ONE promotes.
  *  3. `dry-run` performs zero port mutations.
  *
- * Plus the §9 fold contract (grader `changes_requested` → red attempt +
+ * Plus the fold contract (reviewer `changes_requested` → red attempt +
  * exactly-once `fixPromptSent`) and the level-triggered interval runner.
  */
 import { describe, expect, test } from "vitest";
@@ -37,8 +37,8 @@ function mkPolicy(over: Partial<CardPolicy> = {}): CardPolicy {
     maxConsecutiveFailures: 3,
     maxTotalAttempts: 6,
     stallMs: 600_000,
-    producer: { agent: "claude" },
-    grader: { agent: "gemini" },
+    implementor: { agent: "claude" },
+    reviewer: { agent: "gemini" },
     checksCmd: "tsc --noEmit",
     ...over,
   };
@@ -86,7 +86,7 @@ describe("tick() happy path", () => {
     const journal = h.journal as FakeJournal;
     const events = h.eventLog as FakeEventLog;
 
-    // Tick 1: todo → in-progress (+ producer launched).
+    // Tick 1: todo → in-progress (+ implementor launched).
     await h.loop.tick();
     expect(board.cards[0]!.lane).toBe("in-progress");
     expect(board.moves).toEqual([
@@ -94,7 +94,7 @@ describe("tick() happy path", () => {
     ]);
     expect(runtime.producerLaunches.map((c) => c.cardId)).toEqual(["card-1"]);
 
-    // The producer announces done with a non-empty diff.
+    // The implementor announces done with a non-empty diff.
     runtime.setResult("card-1", {
       status: "done",
       summary: "implemented",
@@ -109,15 +109,15 @@ describe("tick() happy path", () => {
     const j2 = (await journal.loadAll())["card-1"]!;
     expect(j2.attempts).toHaveLength(1);
     expect(j2.attempts[0]!.outcome).toBe("green");
-    expect(board.cards[0]!.lane).toBe("in-progress"); // not yet handed to grader
+    expect(board.cards[0]!.lane).toBe("in-progress"); // not yet handed to reviewer
 
-    // Tick 3: last attempt green ⇒ hand to grader (review-by-ai), grader launched.
+    // Tick 3: last attempt green ⇒ hand to reviewer (review-by-ai), reviewer launched.
     await h.loop.tick();
     expect(board.cards[0]!.lane).toBe("review-by-ai");
     expect(runtime.graderLaunches.map((c) => c.cardId)).toEqual(["card-1"]);
     expect(git.checkCalls).toEqual(["card-1"]); // RunChecks did NOT re-fire (sticky result)
 
-    // The grader passes.
+    // The reviewer passes.
     runtime.setReview("card-1", { verdict: "pass", criteria: [], blocking: [], ranChecks: true });
 
     // Tick 4: verdict pass in review-by-ai ⇒ advance to the human gate.
@@ -161,7 +161,7 @@ describe("fleet promotion gate (seam)", () => {
     expect(promoted).toHaveLength(1);
     expect(promoted[0]!.id).toBe("card-a"); // first card consumes the only slot
     expect(board.cards.find((c) => c.id === "card-b")!.lane).toBe("todo");
-    // The gated card's promotion was never issued nor its producer launched.
+    // The gated card's promotion was never issued nor its implementor launched.
     expect(board.moves.map((m) => m.id)).toEqual(["card-a"]);
     expect(runtime.producerLaunches.map((c) => c.cardId)).toEqual(["card-a"]);
   });
@@ -207,10 +207,10 @@ describe("dry-run", () => {
   });
 });
 
-// --- §9 fold contract: grader rejection -----------------------------------
+// --- fold contract: reviewer rejection -----------------------------------
 
 describe("shell fold contract", () => {
-  test("grader changes_requested folds a red attempt with fixPromptSent (exactly-once)", async () => {
+  test("reviewer changes_requested folds a red attempt with fixPromptSent (exactly-once)", async () => {
     // Card sitting in review-by-ai with one green attempt for the current head.
     const card = mkCard({ lane: "review-by-ai" });
     const greenAttempt = { n: 1, outcome: "green" as const, startedAt: 0, diffHash: "deadbeef" };
@@ -228,7 +228,7 @@ describe("shell fold contract", () => {
     const journal = h.journal as FakeJournal;
 
     // Same head (diff hashes to "deadbeef" is not required; we just need a fresh
-    // rejection). Grader requests changes.
+    // rejection). Reviewer requests changes.
     git.setDiff("card-1", "diff --git a/x b/x\n+attempt");
     runtime.setReview("card-1", {
       verdict: "changes_requested",
@@ -247,7 +247,7 @@ describe("shell fold contract", () => {
     const red = j.attempts[1]!;
     expect(red.outcome).toBe("red");
     expect(red.fixPromptSent).toBe(true);
-    expect(j.consecutiveFailures).toBe(1); // grader rejection feeds the §7 caps
+    expect(j.consecutiveFailures).toBe(1); // reviewer rejection feeds the caps
 
     // Next tick: in-progress, last attempt red & fixPromptSent ⇒ NoOp (no re-send).
     const before = runtime.fixPrompts.length;

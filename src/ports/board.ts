@@ -1,6 +1,6 @@
 /**
  * The board seam: the read-only view of the dev-3.0 store plus the **only**
- * sanctioned mutations (via the `dev3` CLI). PLAN §5.
+ * sanctioned mutations (via the `dev3` CLI).
  *
  * @module ports/board
  */
@@ -12,7 +12,7 @@ import type { Card, CustomColumnId, Lane } from "../domain/types.ts";
  *
  * **Reads** join the split JSON store directly (`~/.dev3.0/projects.json` +
  * `~/.dev3.0/data/<slug>/tasks.json`) — `tasks list` has no real `--json`
- * (DISCOVERY §Q1/Q2). The board JSON is **read-only to us** (PLAN §2 #2); every
+ * has no real `--json`. The board JSON is **read-only to us**; every
  * **write** goes through the `dev3` CLI so there is never a second writer to the
  * store.
  */
@@ -20,7 +20,7 @@ export interface BoardPort {
   /**
    * Read the current board as domain {@link Card}s (read-only projection of the
    * split JSON store). Re-read every reconcile tick — this is the observed
-   * desired state and the human may have edited it (PLAN §3, level-triggered).
+   * desired state and the human may have edited it (level-triggered).
    *
    * @returns all cards currently on the board.
    */
@@ -32,8 +32,7 @@ export interface BoardPort {
    *
    * When `expect` is given the adapter issues a server-enforced compare-and-set
    * (`dev3 task move --status <to> --if-status <expect>`), making the move
-   * race-free and idempotent against dev-3.0's own on-exit hooks (DISCOVERY
-   * §Q2-bis; PLAN §6). The move is a no-op (not an error) when the card is no
+   * race-free and idempotent against dev-3.0's own on-exit hooks. The move is a no-op (not an error) when the card is no
    * longer in `expect`.
    *
    * @param id     dev-3.0 task uuid.
@@ -45,7 +44,7 @@ export interface BoardPort {
   /**
    * Attach a human-facing note to a card (`dev3 note add`, `@file` for long
    * bodies). Used to mirror live counters and give-up diagnostics onto the board
-   * so the human sees loop progress (PLAN §7).
+   * so the human sees loop progress.
    *
    * @param id   dev-3.0 task uuid.
    * @param note markdown note body.
@@ -64,7 +63,7 @@ export interface BoardPort {
   /**
    * Optionally subscribe to store changes via `fs.watch` as a **latency
    * optimization only** — correctness still comes from the periodic full
-   * reconcile (PLAN §2 #3). `onChange` may fire spuriously or be missed; treat it
+   * reconcile. `onChange` may fire spuriously or be missed; treat it
    * purely as an early wake-up.
    *
    * @param onChange invoked when the store appears to have changed.

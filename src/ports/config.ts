@@ -1,6 +1,6 @@
 /**
  * The config seam: resolves the effective {@link CardPolicy} for a card from
- * repo defaults (policy file) plus per-card overrides (PLAN §5/§11).
+ * repo defaults (policy file) plus per-card overrides.
  *
  * @module ports/config
  */
@@ -8,8 +8,8 @@
 import type { Card, CardPolicy } from "../domain/types.ts";
 
 /**
- * Resolves per-card policy. The producer/grader-independence assertion (PLAN §8,
- * §13 test 3) is enforced where the policy is loaded, not in the pure domain.
+ * Resolves per-card policy. The implementor/reviewer-independence assertion is
+ * enforced where the policy is loaded, not in the pure domain.
  */
 export interface ConfigPort {
   /**

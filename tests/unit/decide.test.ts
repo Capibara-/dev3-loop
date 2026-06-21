@@ -1,11 +1,11 @@
 /**
- * Transition-table tests for the pure `decide()` state machine (T8, PLAN §6/§13).
+ * Transition-table tests for the pure `decide()` state machine.
  *
  * `decide()` is PURE: it returns an **ordered** `Action[]` (`[]` = NoOp) and does
  * zero I/O, so these tests construct plain `Card`/`CardJournal`/`Observation`
  * inputs and assert on the returned list — **including order** for compound rows.
  *
- * Two invariants the rows below lean on (PLAN §2/§6):
+ * Two invariants the rows below lean on:
  *  - The green/red **check outcome is read from `journal.attempts`, never from
  *    `obs`** (a `RunChecks` is an Action whose `CheckResult` the shell folds into an
  *    `AttemptRecord`). So red/green is seeded via `journal.attempts`.
@@ -14,7 +14,7 @@
  *    is asserted.
  *
  * The guardrail-cap predicate is INJECTED (`shouldGiveUp`); these tests use the
- * defaulted allow-all (the real caps are M3) and a stop-stub only to prove the
+ * defaulted allow-all and a stop-stub only to prove the
  * GiveUp wiring is reached.
  */
 import { describe, expect, test } from "vitest";
@@ -44,8 +44,8 @@ function mkPolicy(over: Partial<CardPolicy> = {}): CardPolicy {
     maxConsecutiveFailures: 3,
     maxTotalAttempts: 6,
     stallMs: 600_000,
-    producer: { agent: "claude" },
-    grader: { agent: "gemini" },
+    implementor: { agent: "claude" },
+    reviewer: { agent: "gemini" },
     checksCmd: "tsc --noEmit",
     ...over,
   };
@@ -105,7 +105,7 @@ interface Row {
 const card = mkCard();
 
 const rows: Row[] = [
-  // §6 row: todo — decide() always PROPOSES promotion (fleet gate is shell-side, T10).
+  // todo — decide() always PROPOSES promotion (fleet gate is shell-side).
   {
     name: "todo ⇒ [MoveLane→in-progress, LaunchProducer]",
     card: mkCard({ lane: "todo" }),
@@ -117,8 +117,8 @@ const rows: Row[] = [
     ],
   },
 
-  // §6 row: in-progress, result done, diff not yet attempted, non-empty ⇒ RunChecks
-  // (producer self-report — incl. claimedTestsPass — is never trusted: we re-run).
+  // in-progress, result done, diff not yet attempted, non-empty ⇒ RunChecks
+  // (implementor self-report — incl. claimedTestsPass — is never trusted: we re-run).
   {
     name: "in-progress, result done, fresh non-empty diff ⇒ RunChecks (self-report ignored)",
     card: mkCard({ lane: "in-progress" }),
@@ -130,7 +130,7 @@ const rows: Row[] = [
     expected: [{ kind: "RunChecks", card: mkCard({ lane: "in-progress" }) }],
   },
 
-  // §6 row: in-progress, result done over EMPTY diff (no diffHash) ⇒ GiveUp("empty-diff").
+  // in-progress, result done over EMPTY diff (no diffHash) ⇒ GiveUp("empty-diff").
   {
     name: "in-progress, result done, empty diff ⇒ GiveUp(empty-diff)",
     card: mkCard({ lane: "in-progress" }),
@@ -141,7 +141,7 @@ const rows: Row[] = [
     expected: [{ kind: "GiveUp", card: mkCard({ lane: "in-progress" }), reason: "empty-diff" }],
   },
 
-  // §6 row: in-progress, result blocked, diff not yet acted ⇒ MoveLane→user-questions
+  // in-progress, result blocked, diff not yet acted ⇒ MoveLane→user-questions
   // (HUMAN HANDOFF — single guarded move carrying the blocked question as a note;
   // NOT a failure, NOT a RunChecks, NOT a GiveUp).
   {
@@ -163,7 +163,7 @@ const rows: Row[] = [
     ],
   },
 
-  // §6 row: blocked result whose diff was ALREADY acted on (sticky) ⇒ NoOp.
+  // blocked result whose diff was ALREADY acted on (sticky) ⇒ NoOp.
   {
     name: "in-progress, result blocked, diff already acted ⇒ NoOp (sticky)",
     card: mkCard({ lane: "in-progress" }),
@@ -175,9 +175,9 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: done result whose diff was ALREADY acted on, last attempt red & fix
+  // done result whose diff was ALREADY acted on, last attempt red & fix
   // already dispatched ⇒ NoOp — the never-deleted result.json must not re-fire
-  // (Finding #2; sticky-result NoOp realized via AttemptRecord.fixPromptSent).
+  // (sticky-result NoOp realized via AttemptRecord.fixPromptSent).
   {
     name: "in-progress, result done sticky (red+fixPromptSent) ⇒ NoOp",
     card: mkCard({ lane: "in-progress" }),
@@ -192,7 +192,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: in-progress, no result, within stall, alive ⇒ NoOp (still working).
+  // in-progress, no result, within stall, alive ⇒ NoOp (still working).
   {
     name: "in-progress, no result, alive ⇒ NoOp (still working)",
     card: mkCard({ lane: "in-progress" }),
@@ -201,8 +201,8 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: in-progress, last attempt green ⇒ [MoveLane→review-by-ai, LaunchGrader]
-  // (grader runs only after green; red/non-compiling never reaches review-by-ai).
+  // in-progress, last attempt green ⇒ [MoveLane→review-by-ai, LaunchGrader]
+  // (reviewer runs only after green; red/non-compiling never reaches review-by-ai).
   {
     name: "in-progress, last attempt green ⇒ [MoveLane→review-by-ai, LaunchGrader]",
     card: mkCard({ lane: "in-progress" }),
@@ -214,7 +214,7 @@ const rows: Row[] = [
     ],
   },
 
-  // §6 row: in-progress, last attempt red, fix already sent ⇒ NoOp (exactly-once fix).
+  // in-progress, last attempt red, fix already sent ⇒ NoOp (exactly-once fix).
   {
     name: "in-progress, last red, fixPromptSent ⇒ NoOp",
     card: mkCard({ lane: "in-progress" }),
@@ -226,7 +226,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: review-by-ai, no review.json yet ⇒ NoOp (grader still running).
+  // review-by-ai, no review.json yet ⇒ NoOp (reviewer still running).
   {
     name: "review-by-ai, no verdict ⇒ NoOp",
     card: mkCard({ lane: "review-by-ai" }),
@@ -235,7 +235,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: review verdict=pass in review-by-ai ⇒ MoveLane→review-by-user (human gate).
+  // review verdict=pass in review-by-ai ⇒ MoveLane→review-by-user (human gate).
   {
     name: "review-by-ai, verdict pass ⇒ [MoveLane→review-by-user]",
     card: mkCard({ lane: "review-by-ai" }),
@@ -249,7 +249,7 @@ const rows: Row[] = [
     ],
   },
 
-  // §6 row: review verdict=pass in review-by-user ⇒ NoOp (human gate holds).
+  // review verdict=pass in review-by-user ⇒ NoOp (human gate holds).
   {
     name: "review-by-user, verdict pass ⇒ NoOp (human gate)",
     card: mkCard({ lane: "review-by-user" }),
@@ -261,8 +261,8 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: review changes_requested whose diff was ALREADY folded as a red attempt
-  // (rejected) ⇒ NoOp — a sticky review.json must not re-send (Finding #2).
+  // review changes_requested whose diff was ALREADY folded as a red attempt
+  // (rejected) ⇒ NoOp — a sticky review.json must not re-send.
   {
     name: "review changes_requested, diff already rejected ⇒ NoOp (sticky)",
     card: mkCard({ lane: "review-by-ai" }),
@@ -274,7 +274,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: review-by-colleague ⇒ ensure a PR exists (open_pr outcome lane).
+  // review-by-colleague ⇒ ensure a PR exists (open_pr outcome lane).
   {
     name: "review-by-colleague, no PR yet ⇒ [OpenPr]",
     card: mkCard({ lane: "review-by-colleague" }),
@@ -290,7 +290,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: user-questions ⇒ NoOp (human owns the lane; resume is a board drag).
+  // user-questions ⇒ NoOp (human owns the lane; resume is a board drag).
   {
     name: "user-questions ⇒ NoOp",
     card: mkCard({ lane: "user-questions" }),
@@ -299,7 +299,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: completed / cancelled ⇒ NoOp (observe-only terminal; never written by us).
+  // completed / cancelled ⇒ NoOp (observe-only terminal; never written by us).
   {
     name: "completed ⇒ NoOp (observe-only terminal)",
     card: mkCard({ lane: "completed" }),
@@ -315,8 +315,8 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: ready_to_merge custom col, !isMerged (merge_when_green + green) ⇒
-  // Merge with expect=ready_to_merge (CAS guard, Finding #7).
+  // ready_to_merge custom col, !isMerged (merge_when_green + green) ⇒
+  // Merge with expect=ready_to_merge (CAS guard).
   {
     name: "ready_to_merge, !merged (green) ⇒ [Merge expect=ready_to_merge]",
     card: mkCard({ lane: "review-by-user", customColumnId: READY_TO_MERGE }),
@@ -331,7 +331,7 @@ const rows: Row[] = [
     ],
   },
 
-  // §6 row: ready_to_merge, isMerged already ⇒ NoOp (exactly-once).
+  // ready_to_merge, isMerged already ⇒ NoOp (exactly-once).
   {
     name: "ready_to_merge, obs.merged ⇒ NoOp (exactly-once)",
     card: mkCard({ lane: "review-by-user", customColumnId: READY_TO_MERGE }),
@@ -347,7 +347,7 @@ const rows: Row[] = [
     expected: [],
   },
 
-  // §6 row: ANY OTHER unmanaged custom column ⇒ [] (decide() exhaustive, Finding #6a).
+  // ANY OTHER unmanaged custom column ⇒ [] (decide() exhaustive).
   {
     name: "unmanaged custom column ⇒ [] (NoOp)",
     card: mkCard({ lane: "in-progress", customColumnId: "some-other-col" }),
@@ -357,7 +357,7 @@ const rows: Row[] = [
   },
 ];
 
-describe("decide() — §6 transition table (exact Action[])", () => {
+describe("decide() — transition table (exact Action[])", () => {
   test.each(rows)("$name", ({ card, journal, obs, predicate, expected }) => {
     expect(decide(card, journal, mkPolicy(card.policy), obs, NOW, predicate)).toEqual(expected);
   });
@@ -384,8 +384,8 @@ describe("decide() — fix-loop rows (SendFixPrompt)", () => {
 
   test("review changes_requested, not yet rejected ⇒ [MoveLane→in-progress, SendFixPrompt]", () => {
     const c = mkCard({ lane: "review-by-ai" });
-    // Head only passed checks (green) — the grader rejection has NOT been folded as a
-    // red attempt yet, so the findings route back to the producer.
+    // Head only passed checks (green) — the reviewer rejection has NOT been folded as a
+    // red attempt yet, so the findings route back to the implementor.
     const journal = mkJournal({ attempts: [attempt({ outcome: "green", diffHash: "d1" })] });
     const obs = mkObs({
       diffHash: "d1",
@@ -408,9 +408,9 @@ describe("decide() — fix-loop rows (SendFixPrompt)", () => {
   });
 });
 
-// --- guardrail GiveUp wiring (caps are M3; here we only prove decide() routes) ---
+// --- guardrail GiveUp wiring (here we only prove decide() routes) ---
 
-describe("decide() — injected guardrail trips to GiveUp (predicate is M3)", () => {
+describe("decide() — injected guardrail trips to GiveUp", () => {
   test("last red + predicate stops ⇒ GiveUp(reason)", () => {
     const c = mkCard({ lane: "in-progress" });
     const journal = mkJournal({ attempts: [attempt({ outcome: "red", diffHash: "d1" })] });
@@ -466,7 +466,7 @@ describe("applyHumanResume() — drag user-questions → in-progress", () => {
     const after = applyHumanResume(before);
 
     expect(after.consecutiveFailures).toBe(0); // reset
-    expect(after.terminal).toBeUndefined(); // Finding #6b: revived card not still given_up
+    expect(after.terminal).toBeUndefined(); // revived card not still given_up
     expect(after.attempts).toHaveLength(3); // totalAttempts history preserved
     expect(after.totalTokens).toBe(1234); // untouched
     expect("terminal" in after).toBe(false); // key dropped, not set to undefined

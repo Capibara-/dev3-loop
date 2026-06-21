@@ -1,8 +1,8 @@
 /**
- * In-memory {@link ConfigPort} for tests (PLAN §5/§11). Returns a default
+ * In-memory {@link ConfigPort} for tests. Returns a default
  * {@link CardPolicy} for every card, with optional per-card overrides. The
- * producer≠grader independence assertion lives in the real config loader (PLAN
- * §8) — this fake just hands back whatever policy the test supplies.
+ * implementor≠reviewer independence assertion lives in the real config loader —
+ * this fake just hands back whatever policy the test supplies.
  *
  * @module adapters/fake/config
  */

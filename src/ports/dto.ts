@@ -3,10 +3,10 @@
  *
  * PURE module: types only. These describe (a) the results adapters hand back to
  * the domain ({@link CheckResult}, {@link MergeResult}, {@link PrResult}), (b) the
- * on-disk contracts the producer/grader agents write inside the worktree
- * ({@link ProducerResult} = `.dev3/result.json`, {@link GraderReview} =
+ * on-disk contracts the implementor/reviewer agents write inside the worktree
+ * ({@link ImplementorResult} = `.dev3/result.json`, {@link Review} =
  * `.dev3/review.json`), and (c) the replayable event-log record
- * ({@link LoopEvent}). Schemas mirror PLAN.md §10/§11.
+ * ({@link LoopEvent}).
  *
  * @module ports/dto
  */
@@ -15,8 +15,8 @@ import type { Action } from "../domain/types.ts";
 
 /**
  * Outcome of running the mechanical checks command in a worktree
- * (`GitPort.runChecks`). This — never the producer's self-report — is the
- * source of truth for green/red (PLAN §2 #8, §13 test 2).
+ * (`GitPort.runChecks`). This — never the implementor's self-report — is the
+ * source of truth for green/red.
  */
 export interface CheckResult {
   /** True iff the checks command exited 0. */
@@ -31,7 +31,7 @@ export interface CheckResult {
   durationMs: number;
   /**
    * Sorted failing-test ids when extractable; the stable hash of this set is the
-   * `failureSignature` used for no-progress detection (PLAN §10). Falls back to
+   * `failureSignature` used for no-progress detection. Falls back to
    * `undefined` when no structured ids could be parsed.
    */
   failingTests?: string[];
@@ -40,7 +40,7 @@ export interface CheckResult {
 /**
  * Outcome of a `GitPort.merge` of the card branch into its base.
  *
- * `alreadyMerged` makes the operation idempotent (PLAN §2 #4, §9): a write-ahead
+ * `alreadyMerged` makes the operation idempotent: a write-ahead
  * crash between intent and done is reconciled by re-checking, not blind retry.
  */
 export interface MergeResult {
@@ -69,12 +69,12 @@ export interface PrResult {
 }
 
 /**
- * The status file the **producer** agent writes on finish: `.dev3/result.json`
- * inside the worktree (PLAN §10). Its presence is the producer's "I'm done"
+ * The status file the **implementor** agent writes on finish: `.dev3/result.json`
+ * inside the worktree. Its presence is the implementor's "I'm done"
  * signal; `claimedTestsPass` is **never trusted** — the reconciler re-runs the
- * checks regardless (PLAN §13 test 2).
+ * checks regardless.
  */
-export interface ProducerResult {
+export interface ImplementorResult {
   /** `done` ⇒ ready for checks; `blocked` ⇒ needs human input. */
   status: "done" | "blocked";
   /** Short natural-language summary of what was done. */
@@ -85,42 +85,42 @@ export interface ProducerResult {
   claimedTestsPass: boolean;
 }
 
-/** A single per-criterion verdict line within a {@link GraderReview}. */
-export interface GraderCriterion {
+/** A single per-criterion verdict line within a {@link Review}. */
+export interface ReviewCriterion {
   /** The acceptance criterion being judged. */
   criterion: string;
-  /** True iff the grader considers this criterion met. */
+  /** True iff the reviewer considers this criterion met. */
   met: boolean;
-  /** The grader's rationale / evidence for the verdict. */
+  /** The reviewer's rationale / evidence for the verdict. */
   note: string;
 }
 
 /**
- * The status file the independent **grader** agent writes: `.dev3/review.json`
- * inside the worktree (PLAN §8/§10). The `verdict` — not the board lane — drives
+ * The status file the independent **reviewer** agent writes: `.dev3/review.json`
+ * inside the worktree. The `verdict` — not the board lane — drives
  * routing in `decide()`, because dev-3.0's on-exit hook may force-advance the
- * card before we read it (PLAN §6, DISCOVERY §Q5).
+ * card before we read it.
  */
-export interface GraderReview {
+export interface Review {
   /** `pass` ⇒ proceed to the human gate; `changes_requested` ⇒ loop a fix. */
   verdict: "pass" | "changes_requested";
   /** Per-criterion breakdown. */
-  criteria: GraderCriterion[];
+  criteria: ReviewCriterion[];
   /** Blocking findings; non-empty iff `verdict === "changes_requested"`. */
   blocking: string[];
-  /** True iff the grader re-ran the mechanical checks itself. */
+  /** True iff the reviewer re-ran the mechanical checks itself. */
   ranChecks: boolean;
 }
 
 /**
  * Phase of an effectful action's lifecycle, or a standalone observation, as
- * recorded in the append-only NDJSON event log (PLAN §9).
+ * recorded in the append-only NDJSON event log.
  *
  * - `intent` — written **before** an effectful action runs (write-ahead).
  * - `done`   — written **after** it succeeds; pairs with an `intent` by `actionId`.
  * - `lane_move`      — a board lane/column transition was issued.
  * - `guardrail_trip` — a guardrail predicate fired (give-up).
- * - `breaker_open`   — the fleet circuit breaker opened (PLAN §7).
+ * - `breaker_open`   — the fleet circuit breaker opened.
  */
 export type LoopEventType = "intent" | "done" | "lane_move" | "guardrail_trip" | "breaker_open";
 
@@ -128,7 +128,7 @@ export type LoopEventType = "intent" | "done" | "lane_move" | "guardrail_trip" |
  * One record in the append-only event log (`${stateDir}/events.ndjson`). This is
  * an audit/observability trace (powers `replay` + the operations story) — **not**
  * a source of truth: the journal is authoritative and is **not** rebuilt from
- * these (PLAN §9, §13 test 10, Finding #10).
+ * these.
  */
 export interface LoopEvent {
   /** Epoch ms when the event was emitted (from `ClockPort.now`). */
@@ -150,26 +150,26 @@ export interface LoopEvent {
 
 /**
  * The cheap, side-effect-free snapshot the imperative shell gathers each tick and
- * hands to the pure `decide()` (PLAN §4). **Reads only** (idempotent): it never
+ * hands to the pure `decide()`. **Reads only** (idempotent): it never
  * runs the checks command and never mutates anything. Gathered **lane-gated** —
  * skip terminal/`todo` cards, never blind-probe tmux (`capture-pane` hangs on
- * control-mode sessions, DISCOVERY §Q3), and guard every read with a timeout.
+ * control-mode sessions), and guard every read with a timeout.
  *
  * NOT here, on purpose:
  *  - the green/red check outcome — that is the journaled result of a `RunChecks`
  *    {@link Action} (folded into an `AttemptRecord` and read back by the next
  *    tick from `journal.attempts`), never a per-tick read;
  *  - fleet slot availability — a promotion budget the shell spends sequentially
- *    across cards (PLAN §7), not a per-card field.
+ *    across cards, not a per-card field.
  *
  * Lives here (not in `domain/types.ts`) to avoid an import cycle: this module
  * already imports {@link Action} from there, and `reconcile.ts` imports this.
  */
 export interface Observation {
-  /** `.dev3/result.json` (producer done-signal), or null if absent/unparseable. */
-  result: ProducerResult | null;
-  /** `.dev3/review.json` (grader verdict), or null if absent/unparseable. */
-  review: GraderReview | null;
+  /** `.dev3/result.json` (implementor done-signal), or null if absent/unparseable. */
+  result: ImplementorResult | null;
+  /** `.dev3/review.json` (reviewer verdict), or null if absent/unparseable. */
+  review: Review | null;
   /** Whether the card's tmux session/pane still exists. */
   alive: boolean;
   /** Whether the branch is already merged into base (exactly-once guard). */
@@ -178,10 +178,10 @@ export interface Observation {
   heartbeatAt?: number;
   /**
    * Hash of the current `base...branch` diff — the edge-detector that stops the
-   * level-triggered loop re-firing on a *sticky* `result.json` (Finding #2) plus
-   * the oscillation signal (PLAN §7/§10). **Absent ⇒ an empty diff** (no changes
+   * level-triggered loop re-firing on a *sticky* `result.json` plus
+   * the oscillation signal. **Absent ⇒ an empty diff** (no changes
    * vs base): a present `result.json` over an absent `diffHash` is the degenerate
-   * "done but changed nothing" → give up (PLAN §10).
+   * "done but changed nothing" → give up.
    */
   diffHash?: string;
 }
