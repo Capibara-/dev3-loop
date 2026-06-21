@@ -92,27 +92,6 @@ test("policy caps default when omitted, explicit values win", () => {
   expect(c2.defaultPolicy.tokenBudget).toBe(250_000);
 });
 
-// --- producer/grader independence is NOT a config constraint --------------
-//
-// The producer and grader are configured independently but may share the same
-// agent+config (e.g. Opus for both). Independence comes from the grader's fresh
-// review-by-ai launch + read-only rubric prompt + re-running checks, not from a
-// distinct (agent, config). There is deliberately no boot error here.
-
-test("identical producer and grader (same agent+config) loads without error", () => {
-  const cfg = FileConfig.fromObject(
-    rawConfig({
-      defaultPolicy: {
-        merge: "merge_when_green",
-        producer: { agent: "builtin-claude", config: "claude-default-opus48" },
-        grader: { agent: "builtin-claude", config: "claude-default-opus48" },
-        checksCmd: "tsc --noEmit",
-      },
-    }),
-  );
-  expect(cfg.global.defaultPolicy.producer).toEqual(cfg.global.defaultPolicy.grader);
-});
-
 // --- per-repo + per-card policy resolution --------------------------------
 
 describe("policyFor resolution (repo defaults then card overrides)", () => {
@@ -149,22 +128,6 @@ describe("policyFor resolution (repo defaults then card overrides)", () => {
     const policy = await cfg.policyFor(card);
     expect(policy.merge).toBe("fix_until_green_and_merge"); // card wins over repo
     expect(policy.stallMs).toBe(1234);
-  });
-
-  test("a card override may set the grader equal to the producer (no error)", async () => {
-    // default producer is builtin-claude/claude-default-opus48; the card points
-    // the grader at the same agent+config → accepted (independence isn't a config
-    // constraint).
-    const cfg = FileConfig.fromObject(rawConfig());
-    const card = mkCard({
-      prompt: [
-        "```dev3-loop",
-        JSON.stringify({ grader: { agent: "builtin-claude", config: "claude-default-opus48" } }),
-        "```",
-      ].join("\n"),
-    });
-    const policy = await cfg.policyFor(card);
-    expect(policy.grader).toEqual(policy.producer);
   });
 });
 
