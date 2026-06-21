@@ -275,8 +275,17 @@ function decideInProgress(
     return [moveLane(card, "review-by-ai", "in-progress"), { kind: "LaunchGrader", card }];
   }
   if (last?.outcome === "red") {
+    // Guardrail (incl. the time-based stall) is re-evaluated EVERY tick, even while
+    // we wait for the producer — so a producer that goes silent after the fix still
+    // gives up correctly.
     const verdict = shouldGiveUp(journal, policy, obs, now);
     if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
+    // Deliver the fix exactly once per attempt. `result.json` is never deleted, so
+    // without this we would re-send every tick while the producer is mid-fix (the
+    // sticky-result NoOp, PLAN §6 / Finding #2). A *new* red attempt — even over a
+    // repeated diff — is a fresh fix opportunity, keeping this compatible with the
+    // oscillation guardrail (M3).
+    if (last.fixPromptSent) return NOOP;
     return [{ kind: "SendFixPrompt", card, findings: checkFailureFindings(card, journal) }];
   }
 
