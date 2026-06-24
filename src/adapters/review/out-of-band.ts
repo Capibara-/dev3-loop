@@ -24,12 +24,14 @@ import { shortId } from "../dev3/map.ts";
 // rubric is the agent's prompt; the agent must write .dev3/review.json relative to cwd.
 export type ReviewerCommand = (prompt: string) => { bin: string; args: readonly string[] };
 
-// Default: Claude in print (headless) mode. acceptEdits lets it run the checks + write the
-// verdict file; it runs in the throwaway worktree, so edits can't reach the real branch and the
-// verdict is re-validated by our own checks regardless (git is truth).
+// Default: Claude in print (headless) mode. // DISCOVERY: the reviewer must RUN the checks (Bash)
+// and WRITE the verdict (Write) non-interactively — "plan" blocks writes and "acceptEdits" still
+// prompts (⇒ denies) on Bash, so neither lets the reviewer work headless. bypassPermissions is the
+// right choice here precisely because the reviewer runs in a DISPOSABLE worktree (its edits never
+// reach the real branch) and the verdict is re-validated by our own checks anyway (git is truth).
 export const DEFAULT_REVIEWER_COMMAND: ReviewerCommand = (prompt) => ({
   bin: "claude",
-  args: ["-p", prompt, "--permission-mode", "acceptEdits"],
+  args: ["-p", prompt, "--permission-mode", "bypassPermissions"],
 });
 
 export interface OutOfBandReviewerOptions {
