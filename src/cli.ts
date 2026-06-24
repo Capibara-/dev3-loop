@@ -42,7 +42,10 @@ const SUBCOMMAND_HELP: Record<Subcommand, string> = {
 const SUBCOMMAND_STATUS: Record<Exclude<Subcommand, "replay">, string> = {
   run: "run: not implemented yet — reconcile loop is wired (app/loop startReconciler) but the real dev-3.0 adapters land in M4",
   "dry-run": "dry-run: not implemented yet — the loop's dry-run mode is implemented + tested against fakes; the E2E command lands in M7 (needs M4 adapters)",
-  preflight: "preflight: not implemented yet (M4)",
+  preflight:
+    "preflight: not implemented yet as a CLI command — the reviewer-config check is built " +
+    "(app/preflight reviewerPreflight detects the double-review hazard); store/config validation " +
+    "+ CLI wiring land with the run composition (M7)",
 };
 
 import pkg from "../package.json" with { type: "json" };

@@ -115,6 +115,12 @@ describe("tick() happy path", () => {
     await h.loop.tick();
     expect(board.cards[0]!.lane).toBe("review-by-ai");
     expect(runtime.graderLaunches.map((c) => c.cardId)).toEqual(["card-1"]);
+    // The reviewer is launched with the adversarial read-only rubric (not a bare prompt): it
+    // must re-run the checks, diff origin/<base>, and write the verdict file.
+    const rubric = runtime.graderLaunches[0]!.prompt!;
+    expect(rubric).toContain("READ-ONLY reviewer");
+    expect(rubric).toContain(".dev3/review.json");
+    expect(rubric).toContain("origin/main");
     expect(git.checkCalls).toEqual(["card-1"]); // RunChecks did NOT re-fire (sticky result)
 
     // The reviewer passes.

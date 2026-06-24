@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Dev3CliBoard, Dev3RpcReader, rpc } from "../../src/adapters/dev3/index.ts";
+import { detectReviewerHazards } from "../../src/domain/reviewer.ts";
 import type { CardPolicy } from "../../src/domain/types.ts";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -47,6 +48,14 @@ async function seed(dev3Home: string): Promise<void> {
         setupScript: "", setupScriptLaunchMode: "parallel", devScript: "", cleanupScript: "",
         defaultBaseBranch: "master", clonePaths: [], createdAt: "2026-01-01T00:00:00.000Z",
         labels: [], customColumns: [],
+        // Seed dev-3.0's default edit-and-commit reviewer to exercise the double-review detection.
+        autoReviewEnabled: false,
+        builtinColumnAgents: {
+          "review-by-ai": {
+            agentId: "builtin-claude", configId: "claude-bypass-sonnet",
+            prompt: "Review changes. For medium/high severity: fix directly and commit.",
+          },
+        },
       },
     ]),
   );
@@ -129,6 +138,16 @@ describe.skipIf(!RUN_E2E)("dev3 adapters (isolated real server)", () => {
   it("moveCard surfaces an illegal transition as an error", async () => {
     // DISCOVERY: dev-3.0 enforces legal transitions; todo → user-questions is rejected (exit 1).
     await expect(board.moveCard(TASK_ID, "user-questions", "todo")).rejects.toThrow(/Cannot move/);
+  });
+
+  it("reviewerConfig reads the effective review-by-ai agent via config.show, and preflight flags the fixer", async () => {
+    const state = await reader.reviewerConfig();
+    expect(state.autoReviewEnabled).toBe(false);
+    expect(state.reviewByAi?.agentId).toBe("builtin-claude");
+    expect(state.reviewByAi?.prompt).toContain("fix directly and commit");
+    // The seeded fixer is the double-review hazard ⇒ a blocking error.
+    const findings = detectReviewerHazards(state, BASE_POLICY.reviewer);
+    expect(findings.some((f) => f.level === "error")).toBe(true);
   });
 
   it("addNote + setOverview persist to the task record", async () => {
