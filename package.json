@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "DEV3_LOOP_IT=1 vitest run tests/integration/dev3-e2e.test.ts",
     "cli": "bun run src/cli.ts"
   },
   "devDependencies": {

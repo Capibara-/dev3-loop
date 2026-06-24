@@ -21,6 +21,12 @@
 
 ## Git workflow
 
+- **NEVER commit or push without running the e2e tests locally first.** `bun run test`
+  (and CI) **skip** the real-server integration suite — it's opt-in. Before any commit or
+  push, run `bun run test:e2e` (boots a fully HOME-isolated real `dev3-server`; needs the
+  `dev3-server` binary present) alongside `bun run typecheck` and `bun run test`. The gated
+  suite is exactly where adapter/protocol regressions hide, so the standard gate passing is
+  not enough.
 - **Every task: commit → push → open a PR when it's ready for review.** Don't leave
   finished work sitting only in the local worktree.
 - Commit your work in focused commits on the task branch (already named per the
