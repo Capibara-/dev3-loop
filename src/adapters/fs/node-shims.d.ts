@@ -12,6 +12,7 @@ declare module "node:fs/promises" {
   export function rename(from: string, to: string): Promise<void>; // POSIX rename(2) — the atomicity guarantee
   export function mkdtemp(prefix: string): Promise<string>;
   export function rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>;
+  export function symlink(target: string, path: string): Promise<void>;
 }
 
 declare module "node:os" {

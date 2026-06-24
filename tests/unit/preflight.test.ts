@@ -18,18 +18,18 @@ function source(state: ReviewerConfigState): ReviewerConfigSource {
 const reviewer: AgentSpec = { agent: "gemini", config: "gemini-default" };
 
 describe("reviewerPreflight", () => {
-  test("clean config ⇒ no findings, nothing blocking", async () => {
+  test("in-band, clean config ⇒ no findings, nothing blocking", async () => {
     const state: ReviewerConfigState = {
       autoReviewEnabled: true,
       reviewByAi: reviewByAiOverride(reviewer, "bun test"),
     };
-    const findings = await reviewerPreflight(source(state), reviewer);
+    const findings = await reviewerPreflight(source(state), reviewer, "in-band");
     expect(findings).toEqual([]);
     expect(hasBlockingFinding(findings)).toBe(false);
     expect(formatFindings(findings)).toBe("preflight: reviewer config OK");
   });
 
-  test("default fixer ⇒ a blocking error finding", async () => {
+  test("in-band, default fixer ⇒ a blocking error finding", async () => {
     const state: ReviewerConfigState = {
       autoReviewEnabled: true,
       reviewByAi: {
@@ -38,8 +38,22 @@ describe("reviewerPreflight", () => {
         prompt: "fix directly and commit",
       },
     };
-    const findings = await reviewerPreflight(source(state), reviewer);
+    const findings = await reviewerPreflight(source(state), reviewer, "in-band");
     expect(hasBlockingFinding(findings)).toBe(true);
     expect(formatFindings(findings)).toMatch(/^\[error\]/);
+  });
+
+  test("out-of-band ⇒ never reads project config, never blocks (double-review impossible)", async () => {
+    let read = false;
+    const watched: ReviewerConfigSource = {
+      reviewerConfig: () => {
+        read = true;
+        return Promise.resolve({ autoReviewEnabled: true, reviewByAi: null });
+      },
+    };
+    const findings = await reviewerPreflight(watched, reviewer, "out-of-band");
+    expect(read).toBe(false); // config not even consulted
+    expect(hasBlockingFinding(findings)).toBe(false);
+    expect(findings.every((f) => f.level === "info")).toBe(true);
   });
 });

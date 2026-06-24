@@ -23,6 +23,29 @@ export interface ExecOptions {
   env?: Record<string, string | undefined>;
 }
 
+// Fire-and-forget a long-running child that must OUTLIVE the reconcile tick (e.g. an
+// out-of-band reviewer agent that runs for minutes and signals completion by writing a file).
+// Detached + unref'd so it survives even a dev3-loop restart; stdio is discarded. Returns the
+// pid (undefined if the spawn failed) — the caller polls the child's file output, never waits.
+export function spawnDetached(
+  cmd: string,
+  args: readonly string[],
+  opts: Pick<ExecOptions, "cwd" | "env"> = {},
+): number | undefined {
+  try {
+    const child = spawn(cmd, args, {
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    return child.pid;
+  } catch {
+    return undefined; // missing binary etc. — the reviewer just never writes its verdict
+  }
+}
+
 // Run `cmd args…` to completion (no shell — args are passed verbatim, so no quoting/escaping).
 // Always resolves; inspect `code`/`timedOut`.
 export function exec(cmd: string, args: readonly string[], opts: ExecOptions = {}): Promise<ExecResult> {

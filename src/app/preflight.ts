@@ -5,7 +5,7 @@
 // Broader store/config preflight (the full `dev3-loop preflight` command) wires in with the run
 // composition (M7).
 
-import type { AgentSpec } from "../domain/types.ts";
+import type { AgentSpec, ReviewMode } from "../domain/types.ts";
 import { detectReviewerHazards, type PreflightFinding } from "../domain/reviewer.ts";
 
 // The slice of the reader preflight needs — kept narrow so it is fakeable in tests without a server.
@@ -13,13 +13,26 @@ export interface ReviewerConfigSource {
   reviewerConfig(): Promise<import("../domain/reviewer.ts").ReviewerConfigState>;
 }
 
-// Read the effective reviewer config and report the hazards a human must resolve out-of-band
-// (there is no write verb for builtinColumnAgents — see task notes). `expected` is the reviewer
-// the resolved policy intends to run.
+// Report the reviewer hazards a human must resolve before running. In out-of-band mode the
+// double-review hazard is structurally impossible (the loop never enters review-by-ai), so the
+// project's builtinColumnAgents/autoReviewEnabled config is irrelevant and there is nothing to
+// provision. In in-band mode we read the effective config (no write verb exists — see task
+// notes) and flag the collision. `expected` is the reviewer the resolved policy intends to run.
 export async function reviewerPreflight(
   source: ReviewerConfigSource,
   expected: AgentSpec,
+  reviewMode: ReviewMode,
 ): Promise<PreflightFinding[]> {
+  if (reviewMode === "out-of-band") {
+    return [
+      {
+        level: "info",
+        message:
+          "Out-of-band review: dev3-loop runs its own reviewer and never enters review-by-ai, " +
+          "so no project config is needed and double-review is impossible.",
+      },
+    ];
+  }
   const state = await source.reviewerConfig();
   return detectReviewerHazards(state, expected);
 }

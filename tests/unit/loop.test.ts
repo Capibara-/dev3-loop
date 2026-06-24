@@ -60,7 +60,10 @@ function mkCard(over: Partial<Card> = {}): Card {
 }
 
 /** Wire a loop over fresh fakes; returns the loop + every port for assertions. */
-function harness(cards: Card[], opts: { dryRun?: boolean; cap?: number; journals?: CardJournal[] } = {}) {
+function harness(
+  cards: Card[],
+  opts: { dryRun?: boolean; cap?: number; journals?: CardJournal[]; policy?: CardPolicy } = {},
+) {
   const ports: LoopPorts = {
     board: new FakeBoard(cards),
     runtime: new FakeRuntime(),
@@ -68,7 +71,7 @@ function harness(cards: Card[], opts: { dryRun?: boolean; cap?: number; journals
     journal: new FakeJournal(opts.journals ?? []),
     eventLog: new FakeEventLog(),
     clock: new FixedClock(1_000),
-    config: new FakeConfig(mkPolicy()),
+    config: new FakeConfig(opts.policy ?? mkPolicy()),
   };
   const loop = createLoop(ports, { concurrencyCap: opts.cap ?? 20, dryRun: opts.dryRun ?? false });
   return { loop, ...ports };
@@ -148,6 +151,111 @@ describe("tick() happy path", () => {
       .filter((e) => e.type === "intent" && e.action === "MoveLane")
       .map((e) => e.cardId);
     expect(lanes).toEqual(["card-1", "card-1", "card-1"]);
+  });
+});
+
+// --- 1b. out-of-band review: card never enters review-by-ai ---------------
+
+describe("tick() out-of-band review", () => {
+  const oobPolicy = mkPolicy({ reviewMode: "out-of-band" });
+
+  async function driveToGreenReviewer() {
+    const card = mkCard();
+    const h = harness([card], { policy: oobPolicy });
+    const runtime = h.runtime as FakeRuntime;
+    const git = h.git as FakeGit;
+    const journal = h.journal as FakeJournal;
+
+    await h.loop.tick(); // todo → in-progress
+    runtime.setResult("card-1", { status: "done", summary: "x", blockedQuestion: null, claimedTestsPass: true });
+    git.setDiff("card-1", "diff --git a/x b/x\n+done");
+    await h.loop.tick(); // RunChecks → green attempt
+    await h.loop.tick(); // green + out-of-band ⇒ LaunchGrader (card STAYS in-progress)
+    return { h, runtime, journal, board: h.board as FakeBoard };
+  }
+
+  test("green ⇒ reviewer launched in-place; card stays in-progress, never review-by-ai", async () => {
+    const { runtime, journal, board } = await driveToGreenReviewer();
+    expect(runtime.graderLaunches.map((c) => c.cardId)).toEqual(["card-1"]);
+    expect(board.cards[0]!.lane).toBe("in-progress"); // NOT review-by-ai
+    expect(board.moves.some((m) => m.to === "review-by-ai")).toBe(false);
+    // The green attempt is marked launched ⇒ the reviewer is spawned exactly once.
+    const green = (await journal.loadAll())["card-1"]!.attempts.at(-1)!;
+    expect(green.outcome).toBe("green");
+    expect(green.reviewerLaunched).toBe(true);
+    // The recorded launch prompt is the real read-only rubric.
+    expect(runtime.graderLaunches[0]!.prompt!).toContain("READ-ONLY reviewer");
+  });
+
+  test("reviewer launched but no verdict yet ⇒ NoOp (no re-launch)", async () => {
+    const { h, runtime, board } = await driveToGreenReviewer();
+    await h.loop.tick(); // still no review.json
+    expect(runtime.graderLaunches).toHaveLength(1); // not re-spawned
+    expect(board.cards[0]!.lane).toBe("in-progress");
+  });
+
+  test("verdict pass ⇒ in-progress → review-by-user (human gate), still never review-by-ai", async () => {
+    const { h, runtime, board } = await driveToGreenReviewer();
+    runtime.setReview("card-1", { verdict: "pass", criteria: [], blocking: [], ranChecks: true });
+    await h.loop.tick();
+    expect(board.cards[0]!.lane).toBe("review-by-user");
+    expect(board.moves.some((m) => m.to === "review-by-ai")).toBe(false);
+  });
+
+  test("verdict changes_requested ⇒ SendFixPrompt, folded as a red attempt, stays in-progress", async () => {
+    const { h, runtime, journal, board } = await driveToGreenReviewer();
+    runtime.setReview("card-1", {
+      verdict: "changes_requested", criteria: [], blocking: ["Handle empty input"], ranChecks: true,
+    });
+    await h.loop.tick();
+    expect(runtime.fixPrompts.map((c) => c.cardId)).toEqual(["card-1"]);
+    expect(runtime.fixPrompts[0]!.prompt!).toContain("Handle empty input");
+    expect(board.cards[0]!.lane).toBe("in-progress"); // no move
+    const j = (await journal.loadAll())["card-1"]!;
+    const last = j.attempts.at(-1)!;
+    expect(last.outcome).toBe("red"); // reviewer rejection folded as a failure
+    expect(last.fixPromptSent).toBe(true);
+    expect(j.consecutiveFailures).toBe(1); // feeds the caps + breaker
+  });
+
+  test("fix loop: a new green diff re-launches the reviewer; a stale verdict never leaks", async () => {
+    const card = mkCard();
+    const h = harness([card], { policy: oobPolicy });
+    const runtime = h.runtime as FakeRuntime;
+    const git = h.git as FakeGit;
+    const board = h.board as FakeBoard;
+    const journal = h.journal as FakeJournal;
+
+    await h.loop.tick(); // todo → in-progress
+    runtime.setResult("card-1", { status: "done", summary: "x", blockedQuestion: null, claimedTestsPass: true });
+    git.setDiff("card-1", "diff v1");
+    await h.loop.tick(); // RunChecks → green (d1)
+    await h.loop.tick(); // LaunchGrader (d1)
+    expect(runtime.graderLaunches).toHaveLength(1);
+
+    // Reviewer rejects d1 ⇒ fix bounces back, folded red, card stays in-progress.
+    runtime.setReview("card-1", { verdict: "changes_requested", criteria: [], blocking: ["nope"], ranChecks: true });
+    await h.loop.tick();
+    expect(runtime.fixPrompts).toHaveLength(1);
+    expect((await journal.loadAll())["card-1"]!.attempts.at(-1)!.outcome).toBe("red");
+
+    // Implementor produces a NEW diff and re-reports done.
+    git.setDiff("card-1", "diff v2 — fixed");
+    await h.loop.tick(); // fresh diff ⇒ RunChecks → green (d2)
+    expect((await journal.loadAll())["card-1"]!.attempts.at(-1)!.outcome).toBe("green");
+
+    // Green d2 ⇒ the reviewer is RE-launched for the new head (not routed off d1's stale verdict).
+    await h.loop.tick();
+    expect(runtime.graderLaunches).toHaveLength(2);
+    expect(board.cards[0]!.lane).toBe("in-progress"); // still no review-by-ai, no premature gate
+    await h.loop.tick(); // no fresh verdict yet ⇒ NoOp
+    expect(board.cards[0]!.lane).toBe("in-progress");
+
+    // The d2 reviewer passes ⇒ human gate.
+    runtime.setReview("card-1", { verdict: "pass", criteria: [], blocking: [], ranChecks: true });
+    await h.loop.tick();
+    expect(board.cards[0]!.lane).toBe("review-by-user");
+    expect(board.moves.some((m) => m.to === "review-by-ai")).toBe(false);
   });
 });
 

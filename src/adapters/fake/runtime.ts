@@ -47,6 +47,9 @@ export class FakeRuntime implements RuntimePort {
 
   launchGrader(card: Card, spec: AgentSpec, prompt: string): Promise<void> {
     this.graderLaunches.push({ cardId: card.id, spec, prompt });
+    // Models the out-of-band reviewer freshening its throwaway worktree on (re)launch: any
+    // prior verdict is cleared, so a stale review.json can't leak into the next head's routing.
+    this.reviews.delete(card.id);
     return Promise.resolve();
   }
 

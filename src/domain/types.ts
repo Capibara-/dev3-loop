@@ -33,6 +33,15 @@ export interface AgentSpec {
   config?: string; // config id (model/profile), or undefined for default
 }
 
+// How the independent reviewer is launched:
+//  - "in-band": reuse dev-3.0's review-by-ai column agent (the card moves to review-by-ai;
+//    requires a one-time per-project builtinColumnAgents override so OUR read-only reviewer
+//    runs, not dev-3.0's edit-and-commit fixer).
+//  - "out-of-band": dev3-loop spawns its own reviewer (a fresh headless agent in a throwaway
+//    worktree at branch HEAD). The card NEVER enters review-by-ai, so dev-3.0's fixer can't be
+//    triggered — double-review is structurally impossible and NO project config is needed.
+export type ReviewMode = "in-band" | "out-of-band";
+
 export interface CardPolicy {
   merge: MergePolicy;
   maxConsecutiveFailures: number; // default 3
@@ -45,6 +54,7 @@ export interface CardPolicy {
   // from a distinct (agent, config). A different model is recommended, not enforced.
   reviewer: AgentSpec;
   checksCmd: string; // e.g. "bun run test && tsc --noEmit"
+  reviewMode?: ReviewMode; // unset ⇒ in-band (decide() fallback); FileConfig defaults to out-of-band
 }
 
 // ---- Data models ----
@@ -83,6 +93,11 @@ export interface AttemptRecord {
   // never-deleted result.json stays present. Absent/false ⇒ not yet sent (also the safe
   // post-crash default; a re-send is harmless). Only meaningful on red attempts.
   fixPromptSent?: boolean;
+  // True once the shell dispatched the out-of-band reviewer launch for this (green) attempt,
+  // so decide() launches the reviewer exactly once instead of re-spawning every tick while the
+  // card sits in in-progress awaiting the verdict. Only meaningful on green attempts in
+  // out-of-band review mode (in-band leaves in-progress on green, so it never applies).
+  reviewerLaunched?: boolean;
 }
 
 // The single source of truth for state. Persisted atomically; a crash + restart resumes

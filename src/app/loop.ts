@@ -166,7 +166,12 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
 
       case "LaunchGrader":
         await ports.runtime.launchGrader(card, policy.reviewer, graderPrompt(card));
-        return journal;
+        // Out-of-band: mark the green attempt so decide() launches the reviewer exactly once
+        // while the card waits in in-progress. In-band leaves in-progress on green, so the
+        // marker never applies there.
+        return (policy.reviewMode ?? "in-band") === "out-of-band"
+          ? foldReviewerLaunched(journal)
+          : journal;
 
       case "RunChecks": {
         // The source of truth for green/red — never the implementor's self-report.
@@ -500,6 +505,15 @@ function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): Car
     attempts: [...journal.attempts, attempt],
     consecutiveFailures: journal.consecutiveFailures + 1,
   };
+}
+
+// Set reviewerLaunched on the last (green) attempt — exactly-once out-of-band reviewer launch.
+function foldReviewerLaunched(journal: CardJournal): CardJournal {
+  const last = journal.attempts[journal.attempts.length - 1];
+  if (!last || last.reviewerLaunched === true) return journal;
+  const attempts = journal.attempts.slice(0, -1);
+  attempts.push({ ...last, reviewerLaunched: true });
+  return { ...journal, attempts };
 }
 
 // The reviewer's launch input: the adversarial read-only rubric (re-run checks, diff

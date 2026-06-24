@@ -408,6 +408,92 @@ describe("decide() — fix-loop rows (SendFixPrompt)", () => {
   });
 });
 
+// --- out-of-band review mode --------------------------------------------
+// dev3-loop runs its own reviewer; the card stays in in-progress and NEVER enters review-by-ai,
+// so dev-3.0's fixer can't be triggered (double-review is structurally impossible).
+
+describe("decide() — out-of-band review mode", () => {
+  const oob = (over: Partial<CardPolicy> = {}): Card =>
+    mkCard({ lane: "in-progress", policy: mkPolicy({ reviewMode: "out-of-band", ...over }) });
+
+  test("green, no verdict, reviewer not launched ⇒ [LaunchGrader] (no review-by-ai move)", () => {
+    const c = oob();
+    const j = mkJournal({ attempts: [attempt({ outcome: "green", diffHash: "d1" })] });
+    const actions = decide(c, j, c.policy, mkObs({ diffHash: "d1" }), NOW);
+    expect(actions.map((a) => a.kind)).toEqual(["LaunchGrader"]);
+  });
+
+  test("green, no verdict, reviewer already launched ⇒ NoOp (awaiting verdict)", () => {
+    const c = oob();
+    const j = mkJournal({
+      attempts: [attempt({ outcome: "green", diffHash: "d1", reviewerLaunched: true })],
+    });
+    expect(decide(c, j, c.policy, mkObs({ diffHash: "d1" }), NOW)).toEqual([]);
+  });
+
+  test("green, reviewer launched, stall predicate trips ⇒ GiveUp (hung reviewer still gives up)", () => {
+    const c = oob();
+    const j = mkJournal({
+      attempts: [attempt({ outcome: "green", diffHash: "d1", reviewerLaunched: true })],
+    });
+    const actions = decide(c, j, c.policy, mkObs({ diffHash: "d1" }), NOW, stopWith("stall"));
+    expect(actions).toEqual([{ kind: "GiveUp", card: c, reason: "stall" }]);
+  });
+
+  test("green + verdict pass ⇒ [MoveLane → review-by-user] (in-progress, never review-by-ai)", () => {
+    const c = oob();
+    const j = mkJournal({
+      attempts: [attempt({ outcome: "green", diffHash: "d1", reviewerLaunched: true })],
+    });
+    const obs = mkObs({ diffHash: "d1", review: { verdict: "pass", criteria: [], blocking: [], ranChecks: true } });
+    const actions = decide(c, j, c.policy, obs, NOW);
+    expect(actions).toHaveLength(1);
+    const move = actions[0] as Extract<Action, { kind: "MoveLane" }>;
+    expect(move.kind).toBe("MoveLane");
+    expect(move.to).toBe("review-by-user");
+    expect(move.expect).toBe("in-progress");
+  });
+
+  test("green + verdict changes_requested ⇒ [SendFixPrompt] only, card stays in-progress (no move)", () => {
+    const c = oob();
+    const j = mkJournal({ attempts: [attempt({ outcome: "green", diffHash: "d1", reviewerLaunched: true })] });
+    const obs = mkObs({
+      diffHash: "d1",
+      review: { verdict: "changes_requested", criteria: [], blocking: ["Fix the off-by-one"], ranChecks: true },
+    });
+    const actions = decide(c, j, c.policy, obs, NOW);
+    expect(actions.map((a) => a.kind)).toEqual(["SendFixPrompt"]);
+    const fix = actions[0] as Extract<Action, { kind: "SendFixPrompt" }>;
+    expect(fix.findings).toContain("Fix the off-by-one");
+  });
+
+  test("defensive: changes_requested over an already-rejected diff ⇒ NoOp (sticky verdict)", () => {
+    const c = oob();
+    const j = mkJournal({
+      attempts: [
+        attempt({ outcome: "red", diffHash: "d1" }),
+        attempt({ outcome: "green", diffHash: "d1", reviewerLaunched: true }),
+      ],
+    });
+    const obs = mkObs({
+      diffHash: "d1",
+      review: { verdict: "changes_requested", criteria: [], blocking: ["x"], ranChecks: true },
+    });
+    expect(decide(c, j, c.policy, obs, NOW)).toEqual([]);
+  });
+
+  test("contrast: in-band green ⇒ moves to review-by-ai; out-of-band never does", () => {
+    const inBand = mkCard({ lane: "in-progress", policy: mkPolicy({ reviewMode: "in-band" }) });
+    const j = mkJournal({ attempts: [attempt({ outcome: "green", diffHash: "d1" })] });
+    const inBandActions = decide(inBand, j, inBand.policy, mkObs({ diffHash: "d1" }), NOW);
+    expect(inBandActions.map((a) => a.kind)).toEqual(["MoveLane", "LaunchGrader"]);
+    expect((inBandActions[0] as Extract<Action, { kind: "MoveLane" }>).to).toBe("review-by-ai");
+
+    const oobActions = decide(oob(), j, oob().policy, mkObs({ diffHash: "d1" }), NOW);
+    expect(oobActions.some((a) => a.kind === "MoveLane")).toBe(false);
+  });
+});
+
 // --- guardrail GiveUp wiring (here we only prove decide() routes) ---
 
 describe("decide() — injected guardrail trips to GiveUp", () => {
