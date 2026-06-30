@@ -15,6 +15,7 @@
 import {
   applyHumanResume,
   decide,
+  READY_TO_MERGE,
   routingKey,
   type GiveUpPredicate,
 } from "../domain/reconcile.ts";
@@ -247,6 +248,17 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
       }
 
       const obs = needsObservation(key, journal) ? await observe(card) : EMPTY_OBS;
+
+      // Async merge completion: `gh pr merge --auto` returns before GitHub actually merges, so
+      // the initiating Merge leaves terminal unset and decide() re-initiates idempotently each
+      // tick. Once the remote reflects the merge we record terminal here, exactly once
+      // (poll-completion, mirroring recover()). "Done" = the merge commit in git, not a column —
+      // we never auto-complete; the human archives.
+      if (key === READY_TO_MERGE && obs.merged && journal.terminal === undefined) {
+        journal = { ...journal, terminal: "merged" };
+        if (!dryRun) await ports.journal.persist(journal);
+      }
+
       const actions = decide(card, journal, policy, obs, now, shouldGiveUp);
 
       let actionIndex = 0;

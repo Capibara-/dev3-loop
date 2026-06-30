@@ -24,6 +24,7 @@ export class FakeGit implements GitPort {
   private checks = new Map<string, CheckResult>();
   private merged = new Set<string>();
   private prs = new Map<string, string>();
+  private autoPending = new Set<string>();
 
   setDiff(cardId: string, diff: string): void {
     this.diffs.set(cardId, diff);
@@ -35,6 +36,16 @@ export class FakeGit implements GitPort {
 
   // Pre-mark a card's branch as already merged (e.g. for recovery fixtures).
   markMerged(cardId: string): void {
+    this.merged.add(cardId);
+  }
+
+  // Simulate `gh pr merge --auto`: merge() initiates but does NOT complete (returns pending);
+  // the branch stays unmerged until completeAutoMerge() flips it (as GitHub would on a later tick).
+  armAutoMerge(cardId: string): void {
+    this.autoPending.add(cardId);
+  }
+
+  completeAutoMerge(cardId: string): void {
     this.merged.add(cardId);
   }
 
@@ -56,6 +67,11 @@ export class FakeGit implements GitPort {
     const commit = `merge-${card.id}`;
     if (this.merged.has(card.id)) {
       return Promise.resolve({ merged: true, alreadyMerged: true, commit });
+    }
+    // Armed async auto-merge: re-initiating is a safe no-op, never an error — completion lands
+    // on a later tick once completeAutoMerge() fires.
+    if (this.autoPending.has(card.id)) {
+      return Promise.resolve({ merged: false, alreadyMerged: false, pending: true });
     }
     this.merged.add(card.id);
     return Promise.resolve({ merged: true, alreadyMerged: false, commit });

@@ -22,10 +22,14 @@ export interface CheckResult {
 }
 
 // alreadyMerged makes merge idempotent: a write-ahead crash between intent and done
-// is reconciled by re-checking, not blind retry.
+// is reconciled by re-checking, not blind retry. Under `gh pr merge --auto` merge is
+// *initiate*, not done — GitHub merges later, once its own required checks pass — so
+// `pending` distinguishes a successfully-armed async merge (re-poll, NOT a failure)
+// from a hard failure (which carries `message`).
 export interface MergeResult {
   merged: boolean; // now merged, whether by this call or a prior one
   alreadyMerged: boolean; // already merged before this call (exactly-once guard)
+  pending?: boolean; // initiated server-side (auto-merge armed); completion is async
   commit?: string; // resulting merge/HEAD commit on base, when known
   message?: string; // fast-forward vs no-ff, or failure reason
 }
