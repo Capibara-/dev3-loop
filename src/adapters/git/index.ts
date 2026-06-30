@@ -4,6 +4,8 @@
 // asks `gh` for the PR's merge state first and only falls back to local ancestry. All commands
 // run in the card's worktree and are timeout-guarded via the exec seam.
 
+import { tmpdir } from "node:os";
+
 import type { Card } from "../../domain/types.ts";
 import type { CheckResult, MergeResult, PrResult } from "../../ports/dto.ts";
 import type { GitPort } from "../../ports/git.ts";
@@ -14,12 +16,15 @@ declare const Date: { now(): number };
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 const DEFAULT_CHECKS_TIMEOUT_MS = 600_000; // checks can be a full test suite
 
+export type MergeStrategy = "merge" | "squash" | "rebase";
+
 export interface GitCliOptions {
   gitBin?: string; // default "git"
   ghBin?: string; // default "gh"
   shell?: string; // shell for runChecks; default "bash"
   gitTimeoutMs?: number;
   checksTimeoutMs?: number;
+  mergeStrategy?: MergeStrategy; // `gh pr merge` strategy; default "merge"
 }
 
 export class GitCli implements GitPort {
@@ -28,6 +33,7 @@ export class GitCli implements GitPort {
   private readonly shell: string;
   private readonly gitTimeoutMs: number;
   private readonly checksTimeoutMs: number;
+  private readonly mergeStrategy: MergeStrategy;
 
   constructor(opts: GitCliOptions = {}) {
     this.git = opts.gitBin ?? "git";
@@ -35,6 +41,7 @@ export class GitCli implements GitPort {
     this.shell = opts.shell ?? "bash";
     this.gitTimeoutMs = opts.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
     this.checksTimeoutMs = opts.checksTimeoutMs ?? DEFAULT_CHECKS_TIMEOUT_MS;
+    this.mergeStrategy = opts.mergeStrategy ?? "merge";
   }
 
   // base...branch: the changes introduced on the branch since it diverged from base — what the
@@ -70,27 +77,20 @@ export class GitCli implements GitPort {
     return r.code === 0;
   }
 
-  // push + merge into base; idempotent. If the branch is already merged we report alreadyMerged
-  // and do nothing irreversible — the exactly-once guard the write-ahead recovery relies on.
+  // Idempotent, exactly-once merge. If the branch is already merged we report alreadyMerged and
+  // do nothing irreversible (the guard the write-ahead recovery relies on). DEFAULT path =
+  // push + `gh pr merge --auto`: GitHub merges server-side, so the user's worktree is never
+  // checked out onto base. Auto-merge completes ASYNCHRONOUSLY (GitHub gates on its own required
+  // checks), so a freshly-armed merge returns `pending` — the level-triggered loop re-polls
+  // isMerged and only then records terminal. Non-GitHub repos fall back to a local merge in a
+  // THROWAWAY worktree (never the card's), so the branch-checked-out-once rule still can't bite.
   async merge(card: Card): Promise<MergeResult> {
     if (await this.isMerged(card)) {
       return { merged: true, alreadyMerged: true, commit: await this.revParse(card, card.baseBranch) };
     }
     await this.maybePush(card);
-
-    const co = await this.run(card, ["checkout", card.baseBranch]);
-    if (co.code !== 0) return { merged: false, alreadyMerged: false, message: msg(co) };
-
-    const m = await this.run(card, [
-      "merge",
-      "--no-ff",
-      "-m",
-      `Merge ${card.branch} into ${card.baseBranch}`,
-      card.branch,
-    ]);
-    if (m.code !== 0) return { merged: false, alreadyMerged: false, message: msg(m) };
-
-    return { merged: true, alreadyMerged: false, commit: await this.revParse(card, "HEAD") };
+    if (await this.githubCapable(card)) return this.mergeViaGh(card);
+    return this.mergeLocally(card);
   }
 
   // Open a PR via `gh` (idempotent: report the existing PR if one is already open for the
@@ -112,6 +112,71 @@ export class GitCli implements GitPort {
   }
 
   // ---- internals ----
+
+  // GitHub path viable iff `gh` resolves this worktree to a repo it is authed for. A local-only
+  // or non-GitHub repo (no resolvable remote) fails here and falls back to a local merge.
+  private async githubCapable(card: Card): Promise<boolean> {
+    const r = await this.ghRun(card, ["repo", "view", "--json", "url"]);
+    return r.code === 0;
+  }
+
+  // Server-side merge: ensure a PR exists, then arm auto-merge. No local base checkout. Auto-merge
+  // is async, so a successful arm that hasn't merged yet is `pending` (re-poll), not a failure. A
+  // repo with auto-merge disabled falls through to an immediate `gh pr merge`. Re-arming an
+  // already-armed merge is a safe no-op, so re-emitting Merge on a later tick is idempotent.
+  private async mergeViaGh(card: Card): Promise<MergeResult> {
+    const pr = await this.ensurePr(card);
+    if (pr !== null) return { merged: false, alreadyMerged: false, message: pr };
+
+    let r = await this.ghMerge(card, true);
+    if (r.code !== 0 && !(await this.isMerged(card))) r = await this.ghMerge(card, false);
+
+    if (await this.isMerged(card)) {
+      return { merged: true, alreadyMerged: false, commit: await this.revParse(card, card.baseBranch) };
+    }
+    if (r.code === 0) return { merged: false, alreadyMerged: false, pending: true }; // armed, awaiting checks
+    return { merged: false, alreadyMerged: false, message: msg(r) };
+  }
+
+  // Local fallback for repos `gh pr merge` can't serve. NEVER checks base out in the card's
+  // worktree — uses a throwaway linked worktree at base, merges --no-ff there, pushes base if a
+  // remote exists, and always removes the worktree.
+  private async mergeLocally(card: Card): Promise<MergeResult> {
+    const wt = `${tmpdir()}/dev3-loop-merge-${card.id.slice(0, 8)}-${Date.now()}`;
+    const add = await this.run(card, ["worktree", "add", wt, card.baseBranch]);
+    if (add.code !== 0) return { merged: false, alreadyMerged: false, message: msg(add) };
+    try {
+      const m = await this.runIn(wt, [
+        "merge",
+        "--no-ff",
+        "-m",
+        `Merge ${card.branch} into ${card.baseBranch}`,
+        card.branch,
+      ]);
+      if (m.code !== 0) return { merged: false, alreadyMerged: false, message: msg(m) };
+      const commit = (await this.runIn(wt, ["rev-parse", "HEAD"])).stdout.trim();
+      const remote = await this.run(card, ["remote"]);
+      if (remote.code === 0 && remote.stdout.trim().length > 0) {
+        await this.runIn(wt, ["push", "origin", card.baseBranch]);
+      }
+      return { merged: true, alreadyMerged: false, commit };
+    } finally {
+      await this.run(card, ["worktree", "remove", "--force", wt]);
+    }
+  }
+
+  // Ensure an open PR for the branch (gh pr merge needs one). Idempotent. Returns null on success,
+  // or an error message when creation failed.
+  private async ensurePr(card: Card): Promise<string | null> {
+    if ((await this.prUrl(card)) !== null) return null;
+    const r = await this.ghRun(card, ["pr", "create", "--base", card.baseBranch, "--head", card.branch, "--fill"]);
+    return r.code === 0 ? null : `gh pr create failed: ${msg(r)}`;
+  }
+
+  private ghMerge(card: Card, auto: boolean): Promise<ExecResult> {
+    const args = ["pr", "merge", card.branch, ...(auto ? ["--auto"] : []), `--${this.mergeStrategy}`];
+    return this.ghRun(card, args);
+  }
 
   private async maybePush(card: Card): Promise<void> {
     const hasRemote = await this.run(card, ["remote"]);
@@ -156,6 +221,11 @@ export class GitCli implements GitPort {
 
   private run(card: Card, args: readonly string[]): Promise<ExecResult> {
     return exec(this.git, ["-C", this.worktree(card), ...args], { timeoutMs: this.gitTimeoutMs });
+  }
+
+  // git in an arbitrary directory (the throwaway merge worktree), not the card's.
+  private runIn(dir: string, args: readonly string[]): Promise<ExecResult> {
+    return exec(this.git, ["-C", dir, ...args], { timeoutMs: this.gitTimeoutMs });
   }
 
   private ghRun(card: Card, args: readonly string[]): Promise<ExecResult> {
