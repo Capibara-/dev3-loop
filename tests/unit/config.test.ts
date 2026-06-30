@@ -92,6 +92,22 @@ test("policy caps default when omitted, explicit values win", () => {
   expect(c2.defaultPolicy.tokenBudget).toBe(250_000);
 });
 
+test("reviewMode defaults to out-of-band, explicit value wins, garbage rejected", () => {
+  // Provision-free default: the loop runs its own reviewer and never enters review-by-ai.
+  expect(parseGlobalConfig(rawConfig()).defaultPolicy.reviewMode).toBe("out-of-band");
+
+  const inBand = parseGlobalConfig(
+    rawConfig({
+      defaultPolicy: { ...(rawConfig().defaultPolicy as object), reviewMode: "in-band" },
+    }),
+  );
+  expect(inBand.defaultPolicy.reviewMode).toBe("in-band");
+
+  expect(() =>
+    parseGlobalConfig(rawConfig({ defaultPolicy: { ...(rawConfig().defaultPolicy as object), reviewMode: "sideways" } })),
+  ).toThrow(/reviewMode must be one of/);
+});
+
 // --- per-repo + per-card policy resolution --------------------------------
 
 describe("policyFor resolution (repo defaults then card overrides)", () => {

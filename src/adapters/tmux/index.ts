@@ -5,9 +5,12 @@
 // for pane text, so capture() goes through the timeout-guarded exec seam and returns null on a
 // hang rather than ever blocking the reconcile tick.
 //
-// This adapter owns the tmux mechanics + worktree file reads. The richer reviewer-launch
-// semantics (move to review-by-ai with overridden builtinColumnAgents) land with the reviewer
-// stage; launchGrader here just delivers the prompt into the pane like the other launches.
+// This adapter owns the tmux mechanics + worktree file reads. The in-band reviewer launch is the
+// MoveLane → review-by-ai issued through the BoardPort: that move (with autoReviewEnabled) makes
+// dev-3.0 spawn the column agent, and the per-project builtinColumnAgents override makes it OUR
+// read-only reviewer. So launchGrader here is a NO-OP — it must NOT send-keys (the reviewer is a
+// fresh dev-3.0-spawned pane; typing into dev3-<id8> would land in the implementor's still-alive
+// pane). An out-of-band reviewer that drives its own launch is a drop-in RuntimePort swap.
 
 import { readFile } from "node:fs/promises";
 import type { AgentSpec, Card } from "../../domain/types.ts";
@@ -43,8 +46,10 @@ export class TmuxRuntime implements RuntimePort {
     await this.sendKeys(card, prompt);
   }
 
-  async launchGrader(card: Card, _spec: AgentSpec, prompt: string): Promise<void> {
-    await this.sendKeys(card, prompt);
+  // In-band no-op: the MoveLane → review-by-ai (issued via BoardPort) is what launches the
+  // reviewer. See the module header.
+  launchGrader(_card: Card, _spec: AgentSpec, _prompt: string): Promise<void> {
+    return Promise.resolve();
   }
 
   async sendFixPrompt(card: Card, text: string): Promise<void> {

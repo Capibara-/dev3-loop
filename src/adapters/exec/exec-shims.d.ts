@@ -15,6 +15,7 @@ declare module "node:child_process" {
     on(event: "close", cb: (code: number | null) => void): this;
     on(event: "error", cb: (err: Error) => void): this;
     kill(signal?: string | number): boolean;
+    unref(): void;
   }
   export function spawn(
     command: string,
@@ -23,6 +24,7 @@ declare module "node:child_process" {
       cwd?: string;
       env?: Record<string, string | undefined>;
       stdio?: "ignore" | "pipe";
+      detached?: boolean;
     },
   ): ChildProcess;
 }

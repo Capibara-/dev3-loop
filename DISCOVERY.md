@@ -386,6 +386,15 @@ triggerColumnAgentIfNeeded` + `shared-pure.ts:buildCmdScript`):
    `review-by-ai` key → no agent + no onExit hook → inert lane we fully own. If
    the key is entirely undefined, the default fixer runs — so never leave it
    unset when reusing.)
+   **M5-resolved — how to write the override:** there is **no programmatic write
+   path**. `builtinColumnAgents`/`autoReviewEnabled` live in the read-only
+   `projects.json`; the CLI socket exposes only `config.show`/`config.export`
+   (reads), and `config export` writes `.dev3/config.json`, which does **not**
+   accept these keys. So the override is an **out-of-band human/GUI step**, never a
+   runtime write (constraint #2). dev3-loop *reads* the effective config via
+   `config.show{projectId}` (`Dev3RpcReader.reviewerConfig`) and `reviewerPreflight`
+   flags the double-review hazard; `reviewByAiOverride(spec, checksCmd)` emits the
+   exact `{agentId, configId, prompt}` value a human installs.
 2. **Reconciler routes off `review.json`, not the lane.** The onExit hook is
    **hardcoded**: on **exit 0** the pane runs `dev3 task move --status
    review-by-user --if-status review-by-ai`. So `pass` → exits 0 → auto-advances

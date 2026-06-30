@@ -19,6 +19,7 @@ import {
   type GiveUpPredicate,
 } from "../domain/reconcile.ts";
 import { guardrails } from "../domain/guardrails.ts";
+import { reviewerRubric } from "../domain/reviewer.ts";
 import { evaluateFleet, liveCount, type FleetDecision, type FleetOptions } from "../domain/fleet.ts";
 import { recover } from "./recover.ts";
 import type {
@@ -165,7 +166,12 @@ export function createLoop(ports: LoopPorts, config: LoopConfig): Loop {
 
       case "LaunchGrader":
         await ports.runtime.launchGrader(card, policy.reviewer, graderPrompt(card));
-        return journal;
+        // Out-of-band: mark the green attempt so decide() launches the reviewer exactly once
+        // while the card waits in in-progress. In-band leaves in-progress on green, so the
+        // marker never applies there.
+        return (policy.reviewMode ?? "in-band") === "out-of-band"
+          ? foldReviewerLaunched(journal)
+          : journal;
 
       case "RunChecks": {
         // The source of truth for green/red — never the implementor's self-report.
@@ -501,10 +507,20 @@ function foldFixPrompt(journal: CardJournal, obs: Observation, now: number): Car
   };
 }
 
-// The reviewer's launch input (placeholder; the adversarial rubric lands later).
-function graderPrompt(card: Card): string {
-  return card.acceptanceCriteria.length > 0 ? card.acceptanceCriteria.join("\n") : card.prompt;
+// Set reviewerLaunched on the last (green) attempt — exactly-once out-of-band reviewer launch.
+function foldReviewerLaunched(journal: CardJournal): CardJournal {
+  const last = journal.attempts[journal.attempts.length - 1];
+  if (!last || last.reviewerLaunched === true) return journal;
+  const attempts = journal.attempts.slice(0, -1);
+  attempts.push({ ...last, reviewerLaunched: true });
+  return { ...journal, attempts };
 }
+
+// The reviewer's launch input: the adversarial read-only rubric (re-run checks, diff
+// origin/<base>, write review.json). On the default in-band adapter LaunchGrader is a no-op (the
+// MoveLane already triggered dev-3.0's column agent), so this is the prompt an out-of-band
+// reviewer adapter consumes and the text the action records.
+const graderPrompt = reviewerRubric;
 
 // Human-facing diagnostic attached to the board on give-up.
 function giveUpNote(reason: string, journal: CardJournal): string {

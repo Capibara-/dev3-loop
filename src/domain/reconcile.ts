@@ -225,8 +225,14 @@ function decideInProgress(
   //    red attempt here (which then drives the implementor fix-loop, not another review).
   const last = lastAttempt(journal);
   if (last?.outcome === "green") {
-    // Green checks ⇒ hand to the independent reviewer. The MoveLane triggers dev-3.0's
-    // column agent; LaunchGrader is a no-op on the default in-band adapter.
+    // Green checks ⇒ hand to the independent reviewer.
+    if ((policy.reviewMode ?? "in-band") === "out-of-band") {
+      // dev3-loop runs the reviewer itself; the card STAYS in in-progress (it never enters
+      // review-by-ai, so dev-3.0's fixer can't be triggered — no double-review, no config).
+      return decideOutOfBandReview(card, last, journal, policy, obs, now, shouldGiveUp);
+    }
+    // In-band: the MoveLane triggers dev-3.0's review-by-ai column agent; LaunchGrader is a
+    // no-op on the default in-band adapter.
     return [moveLane(card, "review-by-ai", "in-progress"), { kind: "LaunchGrader", card }];
   }
   if (last?.outcome === "red") {
@@ -249,6 +255,47 @@ function decideInProgress(
   const verdict = shouldGiveUp(journal, policy, obs, now);
   if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "stall" }];
   return NOOP;
+}
+
+// Out-of-band review while the card is still in `in-progress` (last attempt green). dev3-loop
+// owns the reviewer launch + routing end-to-end; the card never enters review-by-ai, so
+// dev-3.0's column agent (the fixer) is never triggered — double-review is structurally
+// impossible with zero project config. Verdict-driven, same edge-detection as in-band.
+function decideOutOfBandReview(
+  card: Card,
+  greenAttempt: CardJournal["attempts"][number],
+  journal: CardJournal,
+  policy: CardPolicy,
+  obs: Observation,
+  now: number,
+  shouldGiveUp: GiveUpPredicate,
+): Action[] {
+  // Launch the reviewer exactly once per green attempt FIRST — only then trust obs.review. The
+  // launch freshens the throwaway worktree (clears any prior attempt's review.json), so a verdict
+  // read after reviewerLaunched is guaranteed to be for THIS head, never a stale one.
+  if (!greenAttempt.reviewerLaunched) return [{ kind: "LaunchGrader", card }];
+
+  const review = obs.review;
+  if (!review) {
+    // Reviewer running. Re-check the stall guardrail so a hung reviewer still gives up.
+    const verdict = shouldGiveUp(journal, policy, obs, now);
+    if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "stall" }];
+    return NOOP;
+  }
+
+  if (review.verdict === "changes_requested") {
+    // Edge-detect: once the shell has folded this rejection as a red attempt for this head, a
+    // sticky review.json must not re-send (defensive — after the fold the last attempt is red,
+    // so the red branch handles it). The green attempt isn't rejected yet → bounce.
+    if (rejectedDiff(journal, obs.diffHash)) return NOOP;
+    const verdict = shouldGiveUp(journal, policy, obs, now);
+    if (verdict.stop) return [{ kind: "GiveUp", card, reason: verdict.reason ?? "guardrail" }];
+    // Already in in-progress, implementor still alive — route the findings back (the shell folds
+    // this as a red attempt feeding consecutiveFailures + the breaker). No lane move.
+    return [{ kind: "SendFixPrompt", card, findings: graderFindings(review) }];
+  }
+  // verdict === "pass" ⇒ straight to the human gate (in-progress → review-by-user is legal).
+  return [moveLane(card, "review-by-user", "in-progress")];
 }
 
 // `review-by-ai` / `review-by-user` routing — verdict-driven.

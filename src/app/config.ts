@@ -6,7 +6,7 @@
 // FileConfig.load. Mirroring cli.ts, we declare the tiny Bun ambient surface rather than
 // pulling in @types/bun (the repo keeps types: []).
 
-import type { AgentSpec, Card, CardPolicy, MergePolicy } from "../domain/types.ts";
+import type { AgentSpec, Card, CardPolicy, MergePolicy, ReviewMode } from "../domain/types.ts";
 import type { ConfigPort } from "../ports/config.ts";
 
 declare const Bun: { file(path: string): { text(): Promise<string> } };
@@ -25,7 +25,12 @@ export const POLICY_DEFAULTS = {
   maxConsecutiveFailures: 3,
   maxTotalAttempts: 6,
   stallMs: 600_000,
+  // Out-of-band by default: dev3-loop runs its own reviewer, never enters review-by-ai, and so
+  // needs no per-project builtinColumnAgents override and can't trigger dev-3.0's fixer.
+  reviewMode: "out-of-band" as ReviewMode,
 } as const;
+
+const REVIEW_MODES: readonly ReviewMode[] = ["in-band", "out-of-band"];
 
 const MERGE_POLICIES: readonly MergePolicy[] = [
   "open_pr",
@@ -86,6 +91,13 @@ function parseMerge(v: unknown, where: string): MergePolicy {
   return v as MergePolicy;
 }
 
+function parseReviewMode(v: unknown, where: string): ReviewMode {
+  if (typeof v !== "string" || !REVIEW_MODES.includes(v as ReviewMode)) {
+    throw new ConfigError(`${where} must be one of: ${REVIEW_MODES.join(", ")}`);
+  }
+  return v as ReviewMode;
+}
+
 function parseAgentSpec(v: unknown, where: string): AgentSpec {
   const o = asObject(v, where);
   const agent = o["agent"];
@@ -132,6 +144,10 @@ export function parseCardPolicy(v: unknown, where: string): CardPolicy {
     implementor,
     reviewer,
     checksCmd,
+    reviewMode:
+      o["reviewMode"] === undefined
+        ? POLICY_DEFAULTS.reviewMode
+        : parseReviewMode(o["reviewMode"], `${where}.reviewMode`),
   };
   const tokenBudget = o["tokenBudget"];
   return tokenBudget === undefined
@@ -154,6 +170,7 @@ export function parsePolicyOverrides(v: unknown, where: string): PolicyOverrides
     out.maxTotalAttempts = posInt(o["maxTotalAttempts"], `${where}.maxTotalAttempts`);
   }
   if (o["stallMs"] !== undefined) out.stallMs = posInt(o["stallMs"], `${where}.stallMs`);
+  if (o["reviewMode"] !== undefined) out.reviewMode = parseReviewMode(o["reviewMode"], `${where}.reviewMode`);
   if (o["tokenBudget"] !== undefined) out.tokenBudget = parseTokenBudget(o["tokenBudget"], `${where}.tokenBudget`);
   if (o["implementor"] !== undefined) out.implementor = parseAgentSpec(o["implementor"], `${where}.implementor`);
   if (o["reviewer"] !== undefined) out.reviewer = parseAgentSpec(o["reviewer"], `${where}.reviewer`);
@@ -180,6 +197,7 @@ export function resolvePolicy(
     if (o.maxConsecutiveFailures !== undefined) merged.maxConsecutiveFailures = o.maxConsecutiveFailures;
     if (o.maxTotalAttempts !== undefined) merged.maxTotalAttempts = o.maxTotalAttempts;
     if (o.stallMs !== undefined) merged.stallMs = o.stallMs;
+    if (o.reviewMode !== undefined) merged.reviewMode = o.reviewMode;
     if (o.tokenBudget !== undefined) merged.tokenBudget = o.tokenBudget;
     if (o.implementor !== undefined) merged.implementor = o.implementor;
     if (o.reviewer !== undefined) merged.reviewer = o.reviewer;
